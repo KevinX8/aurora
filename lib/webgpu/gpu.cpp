@@ -1442,7 +1442,9 @@ static void resize_swapchain_internal(uint32_t width, uint32_t height, uint32_t 
     g_normalBuffer = create_normal_texture(width, height);
   }
   if (g_hdrMode != AURORA_HDR_OFF) {
-    g_uiOverlay = create_render_texture(nativeWidth, nativeHeight, false, ui_format());
+    if (!g_uiOverlay.view || g_uiOverlay.size.width != nativeWidth || g_uiOverlay.size.height != nativeHeight) {
+      g_uiOverlay = create_render_texture(nativeWidth, nativeHeight, false, ui_format());
+    }
   }
   g_CopyBindGroup = create_copy_bind_group(present_source());
 }
