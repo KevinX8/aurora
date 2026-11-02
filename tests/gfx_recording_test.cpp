@@ -18,6 +18,7 @@ class GfxRecordingTest : public ::testing::Test {
 protected:
   void SetUp() override {
     webgpu::g_graphicsConfig.surfaceConfiguration.format = ColorFormat;
+    webgpu::g_graphicsConfig.colorFormat = ColorFormat;
     webgpu::g_graphicsConfig.depthFormat = DepthFormat;
     webgpu::g_graphicsConfig.msaaSamples = 1;
     webgpu::g_frameBuffer.size = {640, 480, 1};

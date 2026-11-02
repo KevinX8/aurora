@@ -362,7 +362,7 @@ void initialize(const AuroraWindowSize& size) noexcept {
   Rml::SetFileInterface(g_fileInterface);
 
   renderInterface->SetWindowSize(dim);
-  renderInterface->SetRenderTargetFormat(webgpu::g_graphicsConfig.surfaceConfiguration.format);
+  renderInterface->SetRenderTargetFormat(webgpu::ui_format());
   renderInterface->CreateDeviceObjects();
 
   Rml::Initialise();

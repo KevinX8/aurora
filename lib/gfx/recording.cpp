@@ -165,8 +165,8 @@ PassSnapshotEntry& acquire_pass_snapshot(uint32_t width, uint32_t height, bool w
   auto& entry = pool.entries[pool.used++];
   const wgpu::Extent3D size{width, height, 1};
   if (wantColor && (!entry.color.texture || entry.color.size.width != width || entry.color.size.height != height ||
-                    entry.color.format != webgpu::g_graphicsConfig.surfaceConfiguration.format)) {
-    const auto format = webgpu::g_graphicsConfig.surfaceConfiguration.format;
+                    entry.color.format != webgpu::g_graphicsConfig.colorFormat)) {
+    const auto format = webgpu::g_graphicsConfig.colorFormat;
     const wgpu::TextureDescriptor desc{
         .label = "Pass Snapshot Color",
         .usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc,
@@ -374,7 +374,7 @@ OffscreenCacheEntry get_offscreen_textures(uint32_t width, uint32_t height) {
   if (const auto it = g_offscreenCache.find(key); it != g_offscreenCache.end()) {
     return it->second;
   }
-  const auto colorFormat = webgpu::g_graphicsConfig.surfaceConfiguration.format;
+  const auto colorFormat = webgpu::g_graphicsConfig.colorFormat;
   const wgpu::Extent3D size{width, height, 1};
   const wgpu::TextureDescriptor colorDesc{
       .label = "Offscreen Color",

@@ -126,6 +126,12 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   if (g_config.maxTextureAnisotropy == 0) {
     g_config.maxTextureAnisotropy = 16;
   }
+  if (g_config.hdrPaperWhiteNits == 0.f) {
+    g_config.hdrPaperWhiteNits = 200.f;
+  }
+  if (g_config.hdrPeakNits == 0.f) {
+    g_config.hdrPeakNits = 1000.f;
+  }
   AURORA_ASSERT(window::initialize(), "Error initializing window");
 
   g_sdlCustomEventsStart = SDL_RegisterEvents(2);
@@ -455,6 +461,13 @@ const AuroraEvent* aurora_update() { return aurora::update(); }
 bool aurora_begin_frame() { return aurora::begin_frame(); }
 void aurora_end_frame() { aurora::end_frame(); }
 AuroraBackend aurora_get_backend() { return aurora::g_config.desiredBackend; }
+AuroraHdrMode aurora_get_hdr_mode() {
+#ifdef AURORA_ENABLE_GX
+  return aurora::webgpu::g_hdrMode;
+#else
+  return AURORA_HDR_OFF;
+#endif
+}
 const AuroraBackend* aurora_get_available_backends(size_t* count) {
   if (count != nullptr) {
     *count = aurora::PreferredBackendOrder.size();

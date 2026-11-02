@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <span>
 #include <string>
 #include <string_view>
@@ -24,6 +25,7 @@
 #include "../internal.hpp"
 #include "../window.hpp"
 #include "gpu_prof.hpp"
+#include "hdr.hpp"
 
 #ifdef WEBGPU_DAWN
 #include "../dawn/TracyPlatform.hpp"
@@ -45,6 +47,7 @@ wgpu::Queue g_queue;
 wgpu::Surface g_surface;
 wgpu::BackendType g_backendType;
 GraphicsConfig g_graphicsConfig;
+AuroraHdrMode g_hdrMode = AURORA_HDR_OFF;
 TextureWithSampler g_frameBuffer;
 TextureWithSampler g_frameBufferResolved;
 TextureWithSampler g_depthBuffer;
@@ -231,6 +234,18 @@ uint32_t viewport_extent(float value) noexcept {
   return std::max(1u, static_cast<uint32_t>(std::lround(std::max(value, 1.f))));
 }
 
+void set_colorspace_env(AuroraHdrMode mode) {
+  const char* value = hdr::colorspace_env(mode);
+  if (value == nullptr) {
+    return;
+  }
+#ifdef _WIN32
+  _putenv_s("DAWN_VK_SWAPCHAIN_COLORSPACE", value);
+#else
+  setenv("DAWN_VK_SWAPCHAIN_COLORSPACE", value, 1);
+#endif
+}
+
 } // namespace
 
 bool vsync_enabled() noexcept { return g_vsyncEnabled.load(std::memory_order_acquire); }
@@ -266,7 +281,7 @@ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool m
       .height = height,
       .depthOrArrayLayers = 1,
   };
-  const auto format = g_graphicsConfig.surfaceConfiguration.format;
+  const auto format = g_graphicsConfig.colorFormat;
   uint32_t sampleCount = 1;
   if (multisampled) {
     sampleCount = g_graphicsConfig.msaaSamples;
@@ -314,6 +329,11 @@ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool m
       .format = format,
       .sampler = std::move(sampler),
   };
+}
+
+wgpu::TextureFormat ui_format() noexcept {
+  return g_hdrMode != AURORA_HDR_OFF ? wgpu::TextureFormat::RGBA8Unorm
+                                     : g_graphicsConfig.surfaceConfiguration.format;
 }
 
 const TextureWithSampler& present_source() noexcept {
@@ -798,6 +818,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
 #endif
     instanceDescriptor.nextInChain = &dawnInstanceDescriptor;
 #endif
+    set_colorspace_env(g_config.hdrMode);
     g_instance = wgpu::CreateInstance(&instanceDescriptor);
     if (!g_instance) {
       Log.error("Failed to create WebGPU instance");
@@ -1059,7 +1080,26 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
     Log.error("Surface has no present modes");
     return false;
   }
-  auto surfaceFormat = best_surface_format();
+  const std::span offeredFormats{g_surfaceCapabilities.formats, g_surfaceCapabilities.formatCount};
+  g_hdrMode = hdr::resolve_mode(g_config.hdrMode, offeredFormats);
+  if (g_hdrMode != g_config.hdrMode) {
+    std::string formatList;
+    for (const auto format : offeredFormats) {
+      formatList += "\n  ";
+      formatList += magic_enum::enum_name(format);
+    }
+    Log.warn("HDR mode {} unavailable, falling back to SDR. Offered formats:{}",
+             magic_enum::enum_name(g_config.hdrMode), formatList);
+  }
+  wgpu::TextureFormat surfaceFormat;
+  wgpu::TextureFormat colorFormat;
+  if (g_hdrMode != AURORA_HDR_OFF) {
+    surfaceFormat = hdr::required_format(g_hdrMode);
+    colorFormat = wgpu::TextureFormat::RGBA16Float;
+  } else {
+    surfaceFormat = best_surface_format();
+    colorFormat = surfaceFormat;
+  }
   g_vsyncEnabled.store(g_config.vsync, std::memory_order_release);
   auto presentMode = select_present_mode(g_surfaceCapabilities);
   Log.info("Using surface format {}, present mode {}", magic_enum::enum_name(surfaceFormat),
@@ -1074,6 +1114,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
               .height = size.native_fb_height,
               .presentMode = presentMode,
           },
+      .colorFormat = colorFormat,
       .depthFormat = wgpu::TextureFormat::Depth32Float,
       .msaaSamples = g_config.msaa,
       .textureAnisotropy = g_config.maxTextureAnisotropy,

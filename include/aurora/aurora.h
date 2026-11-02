@@ -30,6 +30,12 @@ typedef enum {
 } AuroraBackend;
 
 typedef enum {
+  AURORA_HDR_OFF = 0,
+  AURORA_HDR_HDR10 = 1,
+  AURORA_HDR_SCRGB = 2,
+} AuroraHdrMode;
+
+typedef enum {
   LOG_DEBUG,
   LOG_INFO,
   LOG_WARNING,
@@ -116,6 +122,13 @@ typedef struct {
    * This can be set to 0 to disable allocating this region.
    */
   uint32_t mem2Size;
+
+  /* HDR output request. Falls back to AURORA_HDR_OFF if the surface cannot present the format. */
+  AuroraHdrMode hdrMode;
+  /* 0 selects 200 nits. */
+  float hdrPaperWhiteNits;
+  /* 0 selects 1000 nits. */
+  float hdrPeakNits;
 } AuroraConfig;
 
 typedef struct {
@@ -140,6 +153,8 @@ void aurora_set_resampler(AuroraSampler sampler);
 void aurora_set_timescale(float scale);
 
 AuroraBackend aurora_get_backend();
+/** Active HDR mode after surface fallback. */
+AuroraHdrMode aurora_get_hdr_mode();
 const AuroraBackend* aurora_get_available_backends(size_t* count);
 float aurora_get_timescale();
 

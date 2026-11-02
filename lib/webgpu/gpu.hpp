@@ -15,6 +15,7 @@ inline constexpr wgpu::TextureFormat NormalBufferFormat = wgpu::TextureFormat::R
 
 struct GraphicsConfig {
   wgpu::SurfaceConfiguration surfaceConfiguration;
+  wgpu::TextureFormat colorFormat;
   wgpu::TextureFormat depthFormat;
   uint32_t msaaSamples;
   uint16_t textureAnisotropy;
@@ -47,6 +48,7 @@ extern wgpu::Queue g_queue;
 extern wgpu::Surface g_surface;
 extern wgpu::BackendType g_backendType;
 extern GraphicsConfig g_graphicsConfig;
+extern AuroraHdrMode g_hdrMode;
 extern TextureWithSampler g_frameBuffer;
 extern TextureWithSampler g_frameBufferResolved;
 extern TextureWithSampler g_depthBuffer;
@@ -68,6 +70,7 @@ void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);
 void resize_swapchain(uint32_t width, uint32_t height, uint32_t nativeWidth, uint32_t nativeHeight, bool force = false);
 TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
+wgpu::TextureFormat ui_format() noexcept;
 bool enable_normal_buffer();
 const TextureWithSampler& present_source() noexcept;
 wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);

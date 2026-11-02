@@ -188,6 +188,20 @@ if (AURORA_ENABLE_GX)
   )
   aurora_copy_runtime_dlls(gfx_recording_tests)
   gtest_discover_tests(gfx_recording_tests)
+
+  add_executable(hdr_tests
+    hdr_test.cpp
+  )
+  target_include_directories(hdr_tests PRIVATE
+    ../include
+    ../lib
+  )
+  target_link_libraries(hdr_tests PRIVATE
+    gtest
+    gtest_main
+    dawn::dawncpp_headers
+  )
+  gtest_discover_tests(hdr_tests)
 endif () # AURORA_ENABLE_GX
 
 # DVD API tests

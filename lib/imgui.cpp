@@ -100,7 +100,7 @@ void initialize() noexcept {
   } else {
     ImGui_ImplWGPU_InitInfo info;
     info.Device = webgpu::g_device.Get();
-    info.RenderTargetFormat = static_cast<WGPUTextureFormat>(webgpu::g_graphicsConfig.surfaceConfiguration.format);
+    info.RenderTargetFormat = static_cast<WGPUTextureFormat>(webgpu::ui_format());
     ImGui_ImplWGPU_Init(&info);
   }
 }
