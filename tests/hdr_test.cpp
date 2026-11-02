@@ -1,11 +1,70 @@
 #include <gtest/gtest.h>
 
 #include "webgpu/hdr.hpp"
+#include "gx/gx.hpp"
 
 #include <array>
 #include <cmath>
+#include <string>
 
 using namespace aurora::webgpu::hdr;
+
+TEST(HdrShader, TevClampUnclipped) {
+  // Clamped stage: unclip off -> [0,1]; unclip on -> [0,4].
+  const std::string off = aurora::gx::tev_color_op(GX_TEV_ADD, "", "", true, false, "a", "b", "c", "d");
+  ASSERT_NE(off.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
+  const std::string on = aurora::gx::tev_color_op(GX_TEV_ADD, "", "", true, true, "a", "b", "c", "d");
+  EXPECT_NE(on.find(", vec3f(0.0), vec3f(4.0))"), std::string::npos);
+  EXPECT_EQ(on.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
+}
+
+TEST(HdrShader, TevAlphaClampUnclipped) {
+  const std::string off = aurora::gx::tev_alpha_op(GX_TEV_ADD, "", "", true, false, "a", "b", "c", "d");
+  ASSERT_NE(off.find("clamp("), std::string::npos);
+  const std::string on = aurora::gx::tev_alpha_op(GX_TEV_ADD, "", "", true, true, "a", "b", "c", "d");
+  EXPECT_NE(on.find("4.0)"), std::string::npos);
+}
+
+TEST(HdrShader, LightingUnclipped) {
+  aurora::gx::ColorChannelConfig cc{};
+  cc.lightingEnabled = true;
+  aurora::gx::ShaderConfig config{};
+  config.unclipLighting = false;
+  const std::string off = aurora::gx::lighting_func(config, cc, 0, false);
+  ASSERT_NE(off.find("clamp(lighting, vec4f(0.0), vec4f(1.0))"), std::string::npos);
+  config.unclipLighting = true;
+  const std::string on = aurora::gx::lighting_func(config, cc, 0, false);
+  EXPECT_NE(on.find("max(lighting, vec4f(0.0))"), std::string::npos);
+  EXPECT_EQ(on.find("clamp(lighting"), std::string::npos);
+}
+
+TEST(HdrShader, BuildSourceUnclipped) {
+  // build_shader_source requires a mapped position attribute (pre-existing
+  // constraint), so map the minimum to exercise the generated source.
+  auto config = aurora::gx::ShaderConfig{};
+  config.attrs[GX_VA_POS].attrType = GX_DIRECT;
+  config.attrs[GX_VA_POS].cnt = 3;
+  config.attrs[GX_VA_POS].compType = GX_F32;
+  config.attrs[GX_VA_POS].stride = 12;
+  config.tevStageCount = 1;
+  auto& stage = config.tevStages[0];
+  stage.colorOp.clamp = true;
+  stage.colorPass.a = GX_CC_RASC;
+  stage.channelId = GX_COLOR0;
+  config.colorChannels[0].lightingEnabled = true;
+  const std::string off = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 0);
+  ASSERT_NE(off.find("clamp("), std::string::npos);
+  EXPECT_NE(off.find("vec3f(1.0)"), std::string::npos);
+  EXPECT_EQ(off.find("vec3f(4.0)"), std::string::npos);
+  EXPECT_NE(off.find("clamp(lighting, vec4f(0.0), vec4f(1.0))"), std::string::npos);
+  config.unclipTev = true;
+  config.unclipLighting = true;
+  const std::string on = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 0);
+  EXPECT_NE(on.find("vec3f(4.0)"), std::string::npos);
+  EXPECT_EQ(on.find("vec3f(1.0)"), std::string::npos);
+  EXPECT_NE(on.find("max(lighting, vec4f(0.0))"), std::string::npos);
+  EXPECT_EQ(on.find("clamp(lighting"), std::string::npos);
+}
 
 TEST(HdrMode, KeepsWhenOffered) {
   std::array f{wgpu::TextureFormat::BGRA8Unorm, wgpu::TextureFormat::RGB10A2Unorm};

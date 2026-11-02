@@ -196,11 +196,18 @@ if (AURORA_ENABLE_GX)
     ../include
     ../lib
   )
+  target_compile_definitions(hdr_tests PRIVATE AURORA TARGET_PC)
   target_link_libraries(hdr_tests PRIVATE
+    aurora::gx
+    aurora::vi
     gtest
     gtest_main
+    fmt::fmt
+    absl::flat_hash_map
+    absl::btree
     dawn::dawncpp_headers
   )
+  aurora_copy_runtime_dlls(hdr_tests)
   gtest_discover_tests(hdr_tests)
 endif () # AURORA_ENABLE_GX
 

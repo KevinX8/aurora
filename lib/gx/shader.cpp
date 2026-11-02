@@ -403,18 +403,6 @@ std::string tev_op(GXTevOp op, std::string_view bias, std::string_view scale, st
   }
 }
 
-std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
-                         std::string_view b, std::string_view c, std::string_view d) {
-  std::string expr = tev_op(op, bias, scale, a, b, c, d, "vec3(0)"sv);
-  return clamp ? fmt::format("clamp({}, vec3f(0.0), vec3f(1.0))", expr)
-               : fmt::format("clamp({}, vec3f(-4.0), vec3f(4.0))", expr);
-}
-
-std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
-                         std::string_view b, std::string_view c, std::string_view d) {
-  std::string expr = tev_op(op, bias, scale, a, b, c, d, "0.0"sv);
-  return clamp ? fmt::format("clamp({}, 0.0, 1.0)", expr) : fmt::format("clamp({}, -4.0, 4.0)", expr);
-}
 
 std::string_view tev_bias(GXTevBias bias) {
   switch (bias) {
@@ -776,10 +764,17 @@ constexpr std::string_view nbt_slice_local(NbtSlice slice) noexcept {
 
 constexpr bool is_emboss_texgen(GXTexGenType type) noexcept { return type >= GX_TG_BUMP0 && type <= GX_TG_BUMP7; }
 
-auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha) -> std::string {
+absl::flat_hash_set<gfx::ShaderRef> s_seenShaders;
+} // namespace
+
+// Exposed for unit testing of the unclip clamp behavior (external linkage).
+std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha) {
   std::string_view swizzle = alpha ? ".a"sv : ""sv;
   std::string outVar;
   std::string_view posVar;
+  const std::string lightingClamp = config.unclipLighting
+                                         ? "max(lighting, vec4f(0.0))"
+                                         : "clamp(lighting, vec4f(0.0), vec4f(1.0))";
   if (UsePerPixelLighting) {
     outVar = fmt::format("rast{}", i);
     posVar = "in.mv_pos"sv;
@@ -861,14 +856,30 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 
           var diff = {3};
           lighting = lighting + (attn * diff * light.color);
       }}
-      {7}{8} = ({4} * clamp(lighting, vec4f(0.0), vec4f(1.0))){8};
+      {7}{8} = ({4} * {10}){8};
     }})""",
                      i, GX::MaxLights, lightAttnFn, lightDiffFn, matSrc, ambSrc, posVar, outVar, swizzle,
-                     alpha ? "a"sv : ""sv);
+                     alpha ? "a"sv : ""sv, lightingClamp);
 }
 
-absl::flat_hash_set<gfx::ShaderRef> s_seenShaders;
-} // namespace
+// Exposed for unit testing of the unclip clamp behavior (external linkage).
+std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
+                         std::string_view a, std::string_view b, std::string_view c, std::string_view d) {
+  std::string expr = tev_op(op, bias, scale, a, b, c, d, "vec3(0)"sv);
+  if (clamp) {
+    return fmt::format("clamp({}, vec3f(0.0), vec3f({}.0))", expr, unclip ? 4 : 1);
+  }
+  return fmt::format("clamp({}, vec3f(-4.0), vec3f(4.0))", expr);
+}
+
+std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
+                         std::string_view a, std::string_view b, std::string_view c, std::string_view d) {
+  std::string expr = tev_op(op, bias, scale, a, b, c, d, "0.0"sv);
+  if (clamp) {
+    return fmt::format("clamp({}, 0.0, {}.0)", expr, unclip ? 4 : 1);
+  }
+  return fmt::format("clamp({}, -4.0, 4.0)", expr);
+}
 
 std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode,
                                 uint32_t normalAttachment) noexcept {
@@ -1092,8 +1103,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
       };
       std::string_view outReg = regName[stage.colorOp.outReg];
       std::string op = tev_color_op(stage.colorOp.op, tev_bias(stage.colorOp.bias), tev_scale(stage.colorOp.scale),
-                                    stage.colorOp.clamp, color_arg(stage.colorPass.a), color_arg(stage.colorPass.b),
-                                    color_arg(stage.colorPass.c), color_arg_reg(stage.colorPass.d, idx, config, stage));
+                                    stage.colorOp.clamp, config.unclipTev, color_arg(stage.colorPass.a),
+                                    color_arg(stage.colorPass.b), color_arg(stage.colorPass.c),
+                                    color_arg_reg(stage.colorPass.d, idx, config, stage));
       fragmentFn += fmt::format("\n    // TEV stage {2}\n    {0} = vec4f({1}, {0}.a);", outReg, op, idx);
       colorNormalized[stage.colorOp.outReg] = stage.colorOp.clamp;
     }
@@ -1107,8 +1119,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
       };
       std::string_view outReg = regName[stage.alphaOp.outReg];
       std::string op = tev_alpha_op(stage.alphaOp.op, tev_bias(stage.alphaOp.bias), tev_scale(stage.alphaOp.scale),
-                                    stage.alphaOp.clamp, alpha_arg(stage.alphaPass.a), alpha_arg(stage.alphaPass.b),
-                                    alpha_arg(stage.alphaPass.c), alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
+                                    stage.alphaOp.clamp, config.unclipTev, alpha_arg(stage.alphaPass.a),
+                                    alpha_arg(stage.alphaPass.b), alpha_arg(stage.alphaPass.c),
+                                    alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
       fragmentFn += fmt::format("\n    {0}.a = {1};", outReg, op);
       alphaNormalized[stage.alphaOp.outReg] = stage.alphaOp.clamp;
     }

@@ -4,6 +4,7 @@
 #include "texture.hpp"
 #include "../dolphin/vi/vi_internal.hpp"
 #include "../webgpu/gpu.hpp"
+#include "../webgpu/hdr.hpp"
 #include "../internal.hpp"
 #include "../window.hpp"
 #include "../gfx/resources.hpp"
@@ -386,6 +387,11 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   config.shaderConfig = {};
   config.shaderConfig.fogType = g_gxState.fog.type;
   config.shaderConfig.fogRangeEnabled = g_gxState.fog.rangeEnabled;
+  if (webgpu::g_hdrMode != AURORA_HDR_OFF) {
+    const auto& unclip = webgpu::hdr::active_unclip();
+    config.shaderConfig.unclipLighting = unclip.unclipLighting;
+    config.shaderConfig.unclipTev = unclip.unclipTev;
+  }
   u8 vtxOffset = 0;
   for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
     const auto attr = static_cast<GXAttr>(i);
