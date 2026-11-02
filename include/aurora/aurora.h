@@ -134,7 +134,6 @@ typedef struct {
 typedef struct {
   bool sceneLinear;
   bool unclipLighting;
-  bool unclipTev;
   float paperWhiteNits;
   float peakNits;
 } AuroraHdrFrame;

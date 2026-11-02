@@ -495,8 +495,7 @@ struct ShaderConfig {
   u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
   u8 fogRangeEnabled : 1 = false;
   u8 unclipLighting : 1 = false;
-  u8 unclipTev : 1 = false;
-  u8 pad1 : 3 = 0;
+  u8 pad1 : 4 = 0;
   u8 pad2 = 0;
   std::array<AttrConfig, MaxVtxAttr> attrs;
   std::array<TevSwap, MaxTevSwap> tevSwapTable;
@@ -549,9 +548,9 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config, const gfx::RenderTar
                                 DstAlphaMode dstAlphaMode) noexcept;
 GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept;
 
-// Exposed for unit testing of the unclip clamp behavior.
-std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
-                         std::string_view a, std::string_view b, std::string_view c, std::string_view d);
+// Exposed for unit testing of the HDR codegen.
+std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d);
 std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
                          std::string_view b, std::string_view c, std::string_view d);
 std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha);

@@ -9,37 +9,28 @@
 
 using namespace aurora::webgpu::hdr;
 
-TEST(HdrShader, TevClampUnclipped) {
-  // Clamped stage: unclip off -> [0,1]; unclip on -> [0,4].
-  const std::string off = aurora::gx::tev_color_op(GX_TEV_ADD, "", "", true, false, "a", "b", "c", "d");
-  ASSERT_NE(off.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
-  const std::string on = aurora::gx::tev_color_op(GX_TEV_ADD, "", "", true, true, "a", "b", "c", "d");
-  EXPECT_NE(on.find(", vec3f(0.0), vec3f(4.0))"), std::string::npos);
-  // The lerp factor stays [0,1] (8-bit on hardware): above 1, (1 - c) goes negative and
-  // subtracts `a`, turning overbright surfaces black/blue.
-  EXPECT_NE(on.find("mix(a, b, clamp(c, vec3f(0.0), vec3f(1.0)))"), std::string::npos);
+// TEV keeps hardware clamps in HDR: Twilight Princess materials rely on them (subtract stages,
+// comparisons, x2/x4 scales), so overbright only comes from the post-TEV lighting gain.
+TEST(HdrShader, TevClampsStayHardware) {
+  const std::string color = aurora::gx::tev_color_op(GX_TEV_ADD, "", "", true, "a", "b", "c", "d");
+  EXPECT_NE(color.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
+  const std::string alpha = aurora::gx::tev_alpha_op(GX_TEV_ADD, "", "", true, "a", "b", "c", "d");
+  EXPECT_NE(alpha.find(", 0.0, 1.0)"), std::string::npos);
 }
 
-// Alpha is a blend/coverage factor: above 1.0, (1 - alpha) blends go negative and punch black
-// holes into effects, so TEV unclip must never apply to alpha (tev_alpha_op takes no unclip flag).
-TEST(HdrShader, TevAlphaStaysClampedWhenUnclipped) {
-  const std::string on = aurora::gx::tev_alpha_op(GX_TEV_ADD, "", "", true, "a", "b", "c", "d");
-  EXPECT_NE(on.find("clamp("), std::string::npos);
-  EXPECT_NE(on.find(", 1.0)"), std::string::npos);
-  EXPECT_EQ(on.find("4.0)"), std::string::npos);
-}
-
-TEST(HdrShader, LightingUnclipped) {
+TEST(HdrShader, LightingUnclipKeepsClampAndEmitsGain) {
   aurora::gx::ColorChannelConfig cc{};
   cc.lightingEnabled = true;
   aurora::gx::ShaderConfig config{};
-  config.unclipLighting = false;
   const std::string off = aurora::gx::lighting_func(config, cc, 0, false);
   ASSERT_NE(off.find("clamp(lighting, vec4f(0.0), vec4f(1.0))"), std::string::npos);
+  EXPECT_EQ(off.find("gain0"), std::string::npos);
   config.unclipLighting = true;
   const std::string on = aurora::gx::lighting_func(config, cc, 0, false);
-  EXPECT_NE(on.find("max(lighting, vec4f(0.0))"), std::string::npos);
-  EXPECT_EQ(on.find("clamp(lighting"), std::string::npos);
+  EXPECT_NE(on.find("clamp(lighting, vec4f(0.0), vec4f(1.0))"), std::string::npos);
+  EXPECT_NE(on.find("out.gain0 = max(lighting.rgb, vec3f(1.0));"), std::string::npos);
+  // Alpha lighting never produces a gain.
+  EXPECT_EQ(aurora::gx::lighting_func(config, cc, 0, true).find("gain"), std::string::npos);
 }
 
 TEST(HdrValidate, AcceptsValid) {
@@ -73,17 +64,13 @@ TEST(HdrShader, BuildSourceUnclipped) {
   stage.colorPass.a = GX_CC_RASC;
   stage.channelId = GX_COLOR0;
   config.colorChannels[0].lightingEnabled = true;
-  const std::string off = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 0);
-  ASSERT_NE(off.find("clamp("), std::string::npos);
-  EXPECT_NE(off.find("vec3f(1.0)"), std::string::npos);
-  EXPECT_EQ(off.find("vec3f(4.0)"), std::string::npos);
-  EXPECT_NE(off.find("clamp(lighting, vec4f(0.0), vec4f(1.0))"), std::string::npos);
-  config.unclipTev = true;
+  const std::string off = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 1);
+  EXPECT_EQ(off.find("gain0"), std::string::npos);
   config.unclipLighting = true;
-  const std::string on = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 0);
-  EXPECT_NE(on.find("vec3f(4.0)"), std::string::npos); // stage output; lerp factor clamp covered above
-  EXPECT_NE(on.find("max(lighting, vec4f(0.0))"), std::string::npos);
-  EXPECT_EQ(on.find("clamp(lighting"), std::string::npos);
+  const std::string on = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 1);
+  EXPECT_NE(on.find("gain0: vec3f"), std::string::npos);
+  EXPECT_NE(on.find("prev = vec4f(prev.rgb * in.gain0, prev.a);"), std::string::npos);
+  EXPECT_EQ(on.find("vec3f(4.0)"), std::string::npos);
 }
 
 TEST(HdrMode, KeepsWhenOffered) {
@@ -134,12 +121,12 @@ TEST(HdrSanitize, NanInf) {
 TEST(HdrFrame, ResetsEachFrame) {
   FrameState s;
   s.pending.sceneLinear = true;
-  s.pending.unclipTev = true;
+  s.pending.unclipLighting = true;
   s.begin_frame();
   EXPECT_FALSE(s.pending.sceneLinear);
-  EXPECT_TRUE(s.unclip.unclipTev);
+  EXPECT_TRUE(s.unclip.unclipLighting);
   s.begin_frame();
-  EXPECT_FALSE(s.unclip.unclipTev);
+  EXPECT_FALSE(s.unclip.unclipLighting);
 }
 
 TEST(HdrFrame, PendingDefaultsToConfigNits) {

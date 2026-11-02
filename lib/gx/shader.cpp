@@ -772,9 +772,6 @@ std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& 
   std::string_view swizzle = alpha ? ".a"sv : ""sv;
   std::string outVar;
   std::string_view posVar;
-  const std::string lightingClamp = config.unclipLighting
-                                         ? "max(lighting, vec4f(0.0))"
-                                         : "clamp(lighting, vec4f(0.0), vec4f(1.0))";
   if (UsePerPixelLighting) {
     outVar = fmt::format("rast{}", i);
     posVar = "in.mv_pos"sv;
@@ -804,6 +801,11 @@ std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& 
   if (!cc.lightingEnabled) {
     return fmt::format("\n    {0}{2} = {1}{2};", outVar, matSrc, swizzle);
   }
+  // HDR: TEV keeps hardware clamps; how far the lighting exceeds 1 is applied to the TEV output.
+  // shortcut: per-vertex lighting only (UsePerPixelLighting is off); per-pixel would need a local gain var.
+  const std::string gainLine = config.unclipLighting && !alpha && !UsePerPixelLighting
+                                   ? fmt::format("\n      out.gain{} = max(lighting.rgb, vec3f(1.0));", i)
+                                   : std::string{};
   GXDiffuseFn diffFn = cc.diffFn;
   std::string lightAttnFn;
   if (cc.attnFn == GX_AF_NONE) {
@@ -856,26 +858,20 @@ std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& 
           var diff = {3};
           lighting = lighting + (attn * diff * light.color);
       }}
-      {7}{8} = ({4} * {10}){8};
+      {7}{8} = ({4} * clamp(lighting, vec4f(0.0), vec4f(1.0))){8};{10}
     }})""",
                      i, GX::MaxLights, lightAttnFn, lightDiffFn, matSrc, ambSrc, posVar, outVar, swizzle,
-                     alpha ? "a"sv : ""sv, lightingClamp);
+                     alpha ? "a"sv : ""sv, gainLine);
 }
 
-// Exposed for unit testing of the unclip clamp behavior (external linkage).
-std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
-                         std::string_view a, std::string_view b, std::string_view c, std::string_view d) {
-  // Unclipped registers can exceed 1, but the lerp factor must not: it is 8-bit on hardware,
-  // and above 1 the (1 - c) term goes negative.
-  const std::string cArg = unclip ? fmt::format("clamp({}, vec3f(0.0), vec3f(1.0))", c) : std::string{c};
-  std::string expr = tev_op(op, bias, scale, a, b, cArg, d, "vec3(0)"sv);
-  if (clamp) {
-    return fmt::format("clamp({}, vec3f(0.0), vec3f({}.0))", expr, unclip ? 4 : 1);
-  }
-  return fmt::format("clamp({}, vec3f(-4.0), vec3f(4.0))", expr);
+// Exposed for unit testing of the HDR codegen (external linkage).
+std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d) {
+  std::string expr = tev_op(op, bias, scale, a, b, c, d, "vec3(0)"sv);
+  return clamp ? fmt::format("clamp({}, vec3f(0.0), vec3f(1.0))", expr)
+               : fmt::format("clamp({}, vec3f(-4.0), vec3f(4.0))", expr);
 }
 
-// No unclip for alpha: it is a blend/coverage factor, and (1 - alpha) blends break above 1.0.
 std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
                          std::string_view b, std::string_view c, std::string_view d) {
   std::string expr = tev_op(op, bias, scale, a, b, c, d, "0.0"sv);
@@ -1104,9 +1100,8 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
       };
       std::string_view outReg = regName[stage.colorOp.outReg];
       std::string op = tev_color_op(stage.colorOp.op, tev_bias(stage.colorOp.bias), tev_scale(stage.colorOp.scale),
-                                    stage.colorOp.clamp, config.unclipTev, color_arg(stage.colorPass.a),
-                                    color_arg(stage.colorPass.b), color_arg(stage.colorPass.c),
-                                    color_arg_reg(stage.colorPass.d, idx, config, stage));
+                                    stage.colorOp.clamp, color_arg(stage.colorPass.a), color_arg(stage.colorPass.b),
+                                    color_arg(stage.colorPass.c), color_arg_reg(stage.colorPass.d, idx, config, stage));
       fragmentFn += fmt::format("\n    // TEV stage {2}\n    {0} = vec4f({1}, {0}.a);", outReg, op, idx);
       colorNormalized[stage.colorOp.outReg] = stage.colorOp.clamp;
     }
@@ -1136,6 +1131,15 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
   }
   if (lastStage.alphaOp.outReg != 0) {
     fragmentFn += fmt::format("\n    prev.a = {0}.a;", regName[lastStage.alphaOp.outReg]);
+  }
+  // Overbright lighting gain (before fog). Skipped when the output relies on 8-bit wraparound.
+  if (config.unclipLighting && prevColorNormalized && !UsePerPixelLighting) {
+    for (int i = 0; i < info.sampledColorChannels.size(); ++i) {
+      if (info.sampledColorChannels.test(i) && config.colorChannels[i].lightingEnabled) {
+        fragmentFn += fmt::format("\n    prev = vec4f(prev.rgb * in.gain{}, prev.a);", i);
+        break;
+      }
+    }
   }
 
   if (info.loadsTevReg.test(0)) {
@@ -1214,6 +1218,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
       fragmentFnPre += lighting_func(config, cca, i, true);
     } else {
       vtxOutAttrs += fmt::format("\n    @location({}) cc{}: vec4f,", vtxOutIdx++, i);
+      if (config.unclipLighting && cc.lightingEnabled) {
+        vtxOutAttrs += fmt::format("\n    @location({}) gain{}: vec3f,", vtxOutIdx++, i);
+      }
       vtxXfrAttrs += lighting_func(config, cc, i, false);
       vtxXfrAttrs += lighting_func(config, cca, i, true);
       fragmentFnPre += fmt::format("\n    var rast{0} = in.cc{0};", i);

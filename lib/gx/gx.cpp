@@ -390,7 +390,6 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   if (webgpu::g_hdrMode != AURORA_HDR_OFF) {
     const auto& unclip = webgpu::hdr::active_unclip();
     config.shaderConfig.unclipLighting = unclip.unclipLighting;
-    config.shaderConfig.unclipTev = unclip.unclipTev;
   }
   u8 vtxOffset = 0;
   for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
