@@ -169,7 +169,8 @@ fn pq_encode(nits: vec3<f32>) -> vec3<f32> {
 fn fs_hdr_encode(in: VertexOutput) -> @location(0) vec4<f32> {
     // scRGB units: 1.0 = 80 nits
     let scene_raw = textureSample(scene, efb_sampler, in.uv).rgb;
-    let c = select(vec3<f32>(0.0), scene_raw, isFinite(scene_raw));
+    // abs(x) < big is false for NaN and ±Inf; this tint has no isFinite builtin
+    let c = select(vec3<f32>(0.0), scene_raw, abs(scene_raw) < vec3<f32>(1e30));
     let scale = uniforms.paper_white / 80.0;
     let scene_lin = select(sign(c) * pow(abs(c), vec3<f32>(2.2)) * scale, c, uniforms.scene_linear != 0u);
     let ui = textureLoad(overlay, vec2<i32>(in.pos.xy), 0);
