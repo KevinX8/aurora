@@ -13,6 +13,7 @@
 #include "imgui.hpp"
 #include "webgpu/gpu.hpp"
 #include "webgpu/gpu_prof.hpp"
+#include "webgpu/hdr.hpp"
 #include <webgpu/webgpu_cpp.h>
 #endif
 
@@ -60,6 +61,56 @@ void set_present_viewport(const wgpu::RenderPassEncoder& pass, const gfx::Viewpo
   const auto scissorRight = clamp_scissor_coord(std::ceil(viewport.left + viewport.width), surfaceWidth);
   const auto scissorBottom = clamp_scissor_coord(std::ceil(viewport.top + viewport.height), surfaceHeight);
   pass.SetScissorRect(scissorX, scissorY, scissorRight - scissorX, scissorBottom - scissorY);
+}
+
+void present_hdr(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& view,
+                 const webgpu::Viewport& viewport, const wgpu::BindGroup& rmlBindGroup,
+                 const imgui::DrawData& imguiDrawData, const AuroraHdrFrame& frame) {
+  const auto surfaceWidth = webgpu::g_graphicsConfig.surfaceConfiguration.width;
+  const auto surfaceHeight = webgpu::g_graphicsConfig.surfaceConfiguration.height;
+  {
+    const std::array attachments{
+        wgpu::RenderPassColorAttachment{
+            .view = webgpu::g_uiOverlay.view,
+            .loadOp = wgpu::LoadOp::Clear,
+            .storeOp = wgpu::StoreOp::Store,
+        },
+    };
+    const wgpu::RenderPassDescriptor renderPassDescriptor{
+        .label = "HDR UI overlay render pass",
+        .colorAttachmentCount = attachments.size(),
+        .colorAttachments = attachments.data(),
+        .timestampWrites = webgpu::gpu_prof::pass_writes("HDR UI overlay"),
+    };
+    const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+    if (rmlBindGroup) {
+      pass.SetPipeline(webgpu::g_CopyPremultipliedAlphaPipeline);
+      pass.SetBindGroup(0, rmlBindGroup, 0, nullptr);
+      set_present_viewport(pass, viewport, surfaceWidth, surfaceHeight);
+      pass.Draw(3);
+    }
+    pass.End();
+  }
+  {
+    const std::array attachments{
+        wgpu::RenderPassColorAttachment{
+            .view = webgpu::g_uiOverlay.view,
+            .loadOp = wgpu::LoadOp::Load,
+            .storeOp = wgpu::StoreOp::Store,
+        },
+    };
+    const wgpu::RenderPassDescriptor renderPassDescriptor{
+        .label = "HDR ImGui render pass",
+        .colorAttachmentCount = attachments.size(),
+        .colorAttachments = attachments.data(),
+        .timestampWrites = webgpu::gpu_prof::pass_writes("HDR ImGui"),
+    };
+    const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+    pass.SetViewport(0.f, 0.f, static_cast<float>(surfaceWidth), static_cast<float>(surfaceHeight), 0.f, 1.f);
+    imgui::render(pass, imguiDrawData);
+    pass.End();
+  }
+  webgpu::hdr_encode(encoder, view, viewport, frame);
 }
 #endif
 
@@ -242,6 +293,7 @@ const AuroraEvent* update() noexcept {
 bool begin_frame() noexcept {
   ZoneScoped;
 #ifdef AURORA_ENABLE_GX
+  webgpu::hdr::g_frameState.begin_frame();
   {
     if (!window::is_presentable()) {
       webgpu::release_surface();
@@ -275,6 +327,7 @@ void end_frame() noexcept {
   gx::texture::end_frame();
   gfx::finish();
   auto imguiDrawData = imgui::freeze();
+  const auto hdrFrame = webgpu::hdr::g_frameState.pending;
 
   const auto& presentSource = webgpu::present_source();
   const auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
@@ -292,7 +345,7 @@ void end_frame() noexcept {
 #endif
 
   gfx::end_frame([rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport,
-                  imguiDrawData = std::move(imguiDrawData)](
+                  imguiDrawData = std::move(imguiDrawData), hdrFrame](
                      wgpu::CommandEncoder& encoder, std::vector<gfx::AfterSubmitCallback> afterSubmitCallbacks) {
     wgpu::Texture currentTexture;
     wgpu::TextureView currentView;
@@ -312,7 +365,9 @@ void end_frame() noexcept {
     }
 
     const bool canPresent = currentTexture && currentView;
-    if (canPresent) {
+    if (canPresent && webgpu::g_hdrMode != AURORA_HDR_OFF) {
+      present_hdr(encoder, currentView, viewport, rmlBindGroup, imguiDrawData, hdrFrame);
+    } else if (canPresent) {
       wgpu::BindGroup presentBindGroup;
       if (rmlBindGroup && !rmlOverlay) {
         presentBindGroup = rmlBindGroup;
@@ -466,6 +521,15 @@ AuroraHdrMode aurora_get_hdr_mode() {
   return aurora::webgpu::g_hdrMode;
 #else
   return AURORA_HDR_OFF;
+#endif
+}
+void aurora_set_hdr_frame(const AuroraHdrFrame* frame) {
+#ifdef AURORA_ENABLE_GX
+  if (frame != nullptr && aurora::webgpu::g_hdrMode != AURORA_HDR_OFF) {
+    aurora::webgpu::hdr::g_frameState.pending = *frame;
+  }
+#else
+  (void)frame;
 #endif
 }
 const AuroraBackend* aurora_get_available_backends(size_t* count) {

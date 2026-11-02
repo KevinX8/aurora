@@ -82,7 +82,7 @@ void ensure_render_target(Rml::Vector2i dimensions) noexcept {
   if (s_renderTarget.view && s_renderTarget.size.width == width && s_renderTarget.size.height == height) {
     return;
   }
-  s_renderTarget = webgpu::create_render_texture(width, height, false);
+  s_renderTarget = webgpu::create_render_texture(width, height, false, webgpu::ui_format());
   s_renderTargetCopyBindGroup = webgpu::create_copy_bind_group(s_renderTarget);
 }
 

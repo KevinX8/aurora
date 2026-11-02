@@ -132,6 +132,14 @@ typedef struct {
 } AuroraConfig;
 
 typedef struct {
+  bool sceneLinear;
+  bool unclipLighting;
+  bool unclipTev;
+  float paperWhiteNits;
+  float peakNits;
+} AuroraHdrFrame;
+
+typedef struct {
   AuroraBackend backend;
   const char* userPath;
   const char* cachePath;
@@ -155,6 +163,8 @@ void aurora_set_timescale(float scale);
 AuroraBackend aurora_get_backend();
 /** Active HDR mode after surface fallback. */
 AuroraHdrMode aurora_get_hdr_mode();
+/** Per-frame HDR state for the current frame only. Ignored when HDR is off. */
+void aurora_set_hdr_frame(const AuroraHdrFrame* frame);
 const AuroraBackend* aurora_get_available_backends(size_t* count);
 float aurora_get_timescale();
 

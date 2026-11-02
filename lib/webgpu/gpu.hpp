@@ -56,6 +56,7 @@ extern TextureWithSampler g_normalBuffer;
 extern wgpu::RenderPipeline g_CopyPipeline;
 extern wgpu::RenderPipeline g_CopyPremultipliedAlphaPipeline;
 extern wgpu::BindGroup g_CopyBindGroup;
+extern TextureWithSampler g_uiOverlay;
 extern wgpu::Instance g_instance;
 extern wgpu::AdapterInfo g_adapterInfo;
 extern bool g_hasCoreFeatures;
@@ -69,7 +70,8 @@ void shutdown();
 void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);
 void resize_swapchain(uint32_t width, uint32_t height, uint32_t nativeWidth, uint32_t nativeHeight, bool force = false);
-TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
+TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled,
+                                         wgpu::TextureFormat format = g_graphicsConfig.colorFormat);
 wgpu::TextureFormat ui_format() noexcept;
 bool enable_normal_buffer();
 const TextureWithSampler& present_source() noexcept;
@@ -79,6 +81,8 @@ AuroraSampler get_resampler() noexcept;
 Viewport calculate_present_viewport(uint32_t surface_width, uint32_t surface_height, uint32_t content_width,
                                     uint32_t content_height) noexcept;
 const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport);
+void hdr_encode(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& target, const Viewport& viewport,
+                const AuroraHdrFrame& frame);
 void draw_clear(const wgpu::RenderPassEncoder& pass, bool clearColor, bool clearAlpha, bool clearDepth,
                 const Vec4<float>& clearColorValue, float clearDepthValue);
 
