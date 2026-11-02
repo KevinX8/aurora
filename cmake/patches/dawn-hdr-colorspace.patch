@@ -1,22 +1,36 @@
+diff --git a/src/dawn/native/vulkan/BackendVk.cpp b/src/dawn/native/vulkan/BackendVk.cpp
+index 064b572f5c..f84356737b 100644
+--- a/src/dawn/native/vulkan/BackendVk.cpp
++++ b/src/dawn/native/vulkan/BackendVk.cpp
+@@ -475,6 +475,10 @@ ResultOrError<VulkanGlobalKnobs> VulkanInstance::CreateVkInstance(const Instance
+     if (!instance->IsBackendValidationEnabled()) {
+         extensionsToRequest.reset(InstanceExt::ValidationFeatures);
+     }
++    // Requested only for HDR so that unset leaves the instance exactly as stock Dawn.
++    if (!GetEnvironmentVar("DAWN_VK_SWAPCHAIN_COLORSPACE").second) {
++        extensionsToRequest.reset(InstanceExt::SwapchainColorspace);
++    }
+ 
+     // Available and known instance extensions default to being requested, but some special
+     // cases are removed.
 diff --git a/src/dawn/native/vulkan/PhysicalDeviceVk.cpp b/src/dawn/native/vulkan/PhysicalDeviceVk.cpp
-index a91b5352bd..0e8e32f26c 100644
+index a91b5352bd..33b75c8356 100644
 --- a/src/dawn/native/vulkan/PhysicalDeviceVk.cpp
 +++ b/src/dawn/native/vulkan/PhysicalDeviceVk.cpp
-@@ -35,6 +35,7 @@
- 
+@@ -36,6 +36,7 @@
  #include "dawn/platform/DawnPlatform.h"
  #include "src/dawn/common/Enumerator.h"
-+#include "src/dawn/common/SystemUtils.h"
  #include "src/dawn/common/GPUInfo.h"
++#include "src/dawn/common/SystemUtils.h"
  #include "src/dawn/native/ChainUtils.h"
  #include "src/dawn/native/Error.h"
-@@ -1632,11 +1633,23 @@ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapab
+ #include "src/dawn/native/Instance.h"
+@@ -1632,11 +1633,20 @@ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapab
                  return wgpu::TextureFormat::Undefined;
          }
      };
-+    // Dusklight HDR: when DAWN_VK_SWAPCHAIN_COLORSPACE is set, report RGB10A2Unorm/RGBA16Float
-+    // only if the surface lists that format with the color space the swapchain will pick
-+    // (drivers often offer RGBA16Float only paired with EXTENDED_SRGB_LINEAR). Unset: unchanged.
++    // Dusklight HDR: with DAWN_VK_SWAPCHAIN_COLORSPACE set, keep only the (format, color space)
++    // pairs the swapchain will pick. Unset: every supported format, as stock Dawn.
 +    const bool swapchainColorSpaceEnvSet =
 +        GetEnvironmentVar("DAWN_VK_SWAPCHAIN_COLORSPACE").second;
      for (VkSurfaceFormatKHR surfaceFormat : vkCaps.formats) {
@@ -27,8 +41,6 @@ index a91b5352bd..0e8e32f26c 100644
 +            continue;
 +        }
 +        if (swapchainColorSpaceEnvSet &&
-+            (format == wgpu::TextureFormat::RGB10A2Unorm ||
-+             format == wgpu::TextureFormat::RGBA16Float) &&
 +            surfaceFormat.colorSpace != GetSwapchainColorSpaceKHR(surfaceFormat.format)) {
 +            continue;
          }
@@ -37,10 +49,18 @@ index a91b5352bd..0e8e32f26c 100644
  
      // Convert known present modes
 diff --git a/src/dawn/native/vulkan/SwapChainVk.cpp b/src/dawn/native/vulkan/SwapChainVk.cpp
-index 179453e57e..b7cb4dda52 100644
+index 179453e57e..c1e59135c5 100644
 --- a/src/dawn/native/vulkan/SwapChainVk.cpp
 +++ b/src/dawn/native/vulkan/SwapChainVk.cpp
-@@ -42,7 +42,9 @@
+@@ -28,6 +28,7 @@
+ #include "src/dawn/native/vulkan/SwapChainVk.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <limits>
+ #include <utility>
+ 
+@@ -42,7 +43,9 @@
  #include "src/dawn/native/vulkan/PhysicalDeviceVk.h"
  #include "src/dawn/native/vulkan/QueueVk.h"
  #include "src/dawn/native/vulkan/TextureVk.h"
@@ -50,18 +70,19 @@ index 179453e57e..b7cb4dda52 100644
  #include "vulkan/vulkan_core.h"
  
  #if defined(DAWN_USE_X11)
-@@ -282,7 +284,17 @@ ResultOrError<SwapChain::Config> SwapChain::ChooseConfig(
-     // Only support BGRA8Unorm (and RGBA8Unorm on android) with SRGB color space for now.
+@@ -279,10 +282,17 @@ ResultOrError<SwapChain::Config> SwapChain::ChooseConfig(
+         config.wgpuUsage = GetUsage();
+     }
+ 
+-    // Only support BGRA8Unorm (and RGBA8Unorm on android) with SRGB color space for now.
++    // The color space is SRGB_NONLINEAR unless DAWN_VK_SWAPCHAIN_COLORSPACE selects an HDR one.
      config.wgpuFormat = GetFormat();
      config.format = VulkanImageFormat(ToBackend(GetDevice()), config.wgpuFormat);
 -    config.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-+    // Dusklight HDR: DAWN_VK_SWAPCHAIN_COLORSPACE picks the color space for HDR formats;
-+    // unset behaves exactly as before (SRGB_NONLINEAR).
 +    config.colorSpace = GetSwapchainColorSpaceKHR(config.format);
 +
-+    static bool sLoggedSwapchainColorSpace = false;
-+    if (!sLoggedSwapchainColorSpace) {
-+        sLoggedSwapchainColorSpace = true;
++    static std::atomic<bool> sLoggedSwapchainColorSpace{false};
++    if (!sLoggedSwapchainColorSpace.exchange(true)) {
 +        dawn::InfoLog() << "Dawn Vulkan: swapchain color space "
 +                        << SwapchainColorSpaceName(config.colorSpace) << " (format "
 +                        << static_cast<uint32_t>(config.wgpuFormat) << ")";
@@ -69,7 +90,7 @@ index 179453e57e..b7cb4dda52 100644
  
      bool formatIsSupported = false;
      for (const VkSurfaceFormatKHR& format : surfaceInfo.formats) {
-@@ -293,7 +305,8 @@ ResultOrError<SwapChain::Config> SwapChain::ChooseConfig(
+@@ -293,7 +303,8 @@ ResultOrError<SwapChain::Config> SwapChain::ChooseConfig(
      }
      if (!formatIsSupported) {
          return DAWN_INTERNAL_ERROR(absl::StrFormat(
