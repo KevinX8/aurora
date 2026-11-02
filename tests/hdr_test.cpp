@@ -38,6 +38,23 @@ TEST(HdrShader, LightingUnclipped) {
   EXPECT_EQ(on.find("clamp(lighting"), std::string::npos);
 }
 
+TEST(HdrValidate, AcceptsValid) {
+  EXPECT_TRUE(validate_hdr_frame(sizeof(AuroraHdrFrame), sizeof(AuroraHdrFrame), 200.f, 1000.f));
+}
+
+TEST(HdrValidate, RejectsBadValues) {
+  const auto expected = sizeof(AuroraHdrFrame);
+  EXPECT_FALSE(validate_hdr_frame(expected, expected, NAN, 1000.f));
+  EXPECT_FALSE(validate_hdr_frame(expected, expected, 0.f, 1000.f));
+  EXPECT_FALSE(validate_hdr_frame(expected, expected, -5.f, 1000.f));
+  EXPECT_FALSE(validate_hdr_frame(expected, expected, 200.f, 10001.f));
+  EXPECT_FALSE(validate_hdr_frame(expected, expected, 1000.f, 200.f));
+}
+
+TEST(HdrValidate, RejectsShortStruct) {
+  EXPECT_FALSE(validate_hdr_frame(4u, sizeof(AuroraHdrFrame), 200.f, 1000.f));
+}
+
 TEST(HdrShader, BuildSourceUnclipped) {
   // build_shader_source requires a mapped position attribute (pre-existing
   // constraint), so map the minimum to exercise the generated source.

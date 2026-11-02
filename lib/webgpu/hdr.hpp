@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aurora/aurora.h>
+#include <aurora/hdr.hpp>
 
 #include "wgpu.hpp"
 
