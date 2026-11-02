@@ -235,14 +235,12 @@ uint32_t viewport_extent(float value) noexcept {
 }
 
 void set_colorspace_env(AuroraHdrMode mode) {
-  const char* value = hdr::colorspace_env(mode);
-  if (value == nullptr) {
-    return;
+#ifndef _WIN32
+  if (const char* value = hdr::colorspace_env(mode)) {
+    setenv("DAWN_VK_SWAPCHAIN_COLORSPACE", value, 1);
   }
-#ifdef _WIN32
-  _putenv_s("DAWN_VK_SWAPCHAIN_COLORSPACE", value);
 #else
-  setenv("DAWN_VK_SWAPCHAIN_COLORSPACE", value, 1);
+  (void)mode;
 #endif
 }
 
@@ -792,6 +790,7 @@ static bool create_surface() {
 }
 
 bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
+  g_hdrMode = AURORA_HDR_OFF;
   if (!g_instance) {
     Log.info("Creating WebGPU instance");
     const std::array requiredInstanceFeatures{
@@ -818,7 +817,8 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
 #endif
     instanceDescriptor.nextInChain = &dawnInstanceDescriptor;
 #endif
-    set_colorspace_env(g_config.hdrMode);
+    set_colorspace_env(to_wgpu_backend(auroraBackend) == wgpu::BackendType::Vulkan ? g_config.hdrMode
+                                                                                   : AURORA_HDR_OFF);
     g_instance = wgpu::CreateInstance(&instanceDescriptor);
     if (!g_instance) {
       Log.error("Failed to create WebGPU instance");
@@ -1081,15 +1081,20 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
     return false;
   }
   const std::span offeredFormats{g_surfaceCapabilities.formats, g_surfaceCapabilities.formatCount};
-  g_hdrMode = hdr::resolve_mode(g_config.hdrMode, offeredFormats);
-  if (g_hdrMode != g_config.hdrMode) {
-    std::string formatList;
-    for (const auto format : offeredFormats) {
-      formatList += "\n  ";
-      formatList += magic_enum::enum_name(format);
+  if (g_config.hdrMode != AURORA_HDR_OFF && g_backendType != wgpu::BackendType::Vulkan) {
+    Log.warn("HDR mode {} requires the Vulkan backend, active backend is {}; using SDR",
+             magic_enum::enum_name(g_config.hdrMode), magic_enum::enum_name(g_backendType));
+  } else {
+    g_hdrMode = hdr::resolve_mode(g_config.hdrMode, offeredFormats);
+    if (g_hdrMode != g_config.hdrMode) {
+      std::string formatList;
+      for (const auto format : offeredFormats) {
+        formatList += "\n  ";
+        formatList += magic_enum::enum_name(format);
+      }
+      Log.warn("HDR mode {} unavailable, falling back to SDR. Offered formats:{}",
+               magic_enum::enum_name(g_config.hdrMode), formatList);
     }
-    Log.warn("HDR mode {} unavailable, falling back to SDR. Offered formats:{}",
-             magic_enum::enum_name(g_config.hdrMode), formatList);
   }
   wgpu::TextureFormat surfaceFormat;
   wgpu::TextureFormat colorFormat;
@@ -1129,6 +1134,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
 
 void shutdown() {
   g_initialized = false;
+  g_hdrMode = AURORA_HDR_OFF;
   gfx::gpu_synchronize();
   gpu_prof::shutdown();
   g_CopyBindGroupLayout = {};
