@@ -872,8 +872,26 @@ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source) {
   return g_device.CreateBindGroup(&bindGroupDescriptor);
 }
 
+TextureWithSampler hdr_scene_source(const AuroraHdrFrame& frame) {
+  if (frame.sceneTexture == nullptr) {
+    return present_source();
+  }
+  const wgpu::Texture texture{static_cast<WGPUTexture>(frame.sceneTexture)};
+  return {
+      .texture = texture,
+      .view = texture.CreateView(),
+      .size = {texture.GetWidth(), texture.GetHeight(), 1},
+      .format = texture.GetFormat(),
+      .sampler = present_source().sampler,
+  };
+}
+
 const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport) {
-  const auto& source = present_source();
+  return resample_present_source(encoder, viewport, present_source());
+}
+
+const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport,
+                                                  const TextureWithSampler& source) {
   const uint32_t width = viewport_extent(viewport.width);
   const uint32_t height = viewport_extent(viewport.height);
   if (!g_resampledFrameBuffer.view || g_resampledFrameBuffer.size.width != width ||
@@ -936,7 +954,7 @@ const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& en
 
 void hdr_encode(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& target, const Viewport& viewport,
                 const AuroraHdrFrame& frame) {
-  const auto& source = resample_present_source(encoder, viewport);
+  const auto& source = resample_present_source(encoder, viewport, hdr_scene_source(frame));
   const HdrEncodeUniformBlock uniform{
       .mode = g_hdrMode == AURORA_HDR_HDR10 ? 1u : 2u,
       .sceneLinear = frame.sceneLinear ? 1u : 0u,
@@ -1344,7 +1362,9 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
   wgpu::TextureFormat colorFormat;
   if (g_hdrMode != AURORA_HDR_OFF) {
     surfaceFormat = hdr::required_format(g_hdrMode);
-    colorFormat = wgpu::TextureFormat::RGBA16Float;
+    // 8-bit like the GameCube EFB: blends must saturate at 1.0 (float let additive effects exceed it,
+    // and (1 - dst) blends then subtracted). HDR comes from the mod's float scene texture override.
+    colorFormat = wgpu::TextureFormat::RGBA8Unorm;
   } else {
     surfaceFormat = best_surface_format();
     colorFormat = surfaceFormat;

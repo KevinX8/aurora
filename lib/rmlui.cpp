@@ -449,7 +449,7 @@ void handle_event(SDL_Event& event) noexcept {
   RmlSDL::InputEventHandler(g_context, window::get_sdl_window(), event);
 }
 
-RecordedFrame record_frame(const webgpu::Viewport& presentViewport) noexcept {
+RecordedFrame record_frame(const webgpu::Viewport& presentViewport, const webgpu::TextureWithSampler& scene) noexcept {
   if (g_context == nullptr) {
     return {};
   }
@@ -467,7 +467,7 @@ RecordedFrame record_frame(const webgpu::Viewport& presentViewport) noexcept {
 
   auto* renderInterface = get_render_interface();
   renderInterface->SetWindowSize(g_context->GetDimensions());
-  renderInterface->BeginFrame(s_renderTarget, webgpu::present_source(),
+  renderInterface->BeginFrame(s_renderTarget, scene,
                               needsBackdrop ? BaseLayerContent::Scene : BaseLayerContent::Transparent);
 
   Backend::BeginFrame();

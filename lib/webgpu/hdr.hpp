@@ -81,7 +81,7 @@ struct FrameState {
 
   void begin_frame() {
     unclip = pending;
-    pending = {false, false, cfgPaperWhite, cfgPeak};
+    pending = {false, false, cfgPaperWhite, cfgPeak, nullptr};
   }
 };
 

@@ -136,6 +136,8 @@ typedef struct {
   bool unclipLighting;
   float paperWhiteNits;
   float peakNits;
+  /* Borrowed WGPUTexture presented instead of the game frame this frame (NULL = game frame). */
+  void* sceneTexture;
 } AuroraHdrFrame;
 
 typedef struct {

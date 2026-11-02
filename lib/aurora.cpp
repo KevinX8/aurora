@@ -329,7 +329,7 @@ void end_frame() noexcept {
   auto imguiDrawData = imgui::freeze();
   const auto hdrFrame = webgpu::hdr::g_frameState.pending;
 
-  const auto& presentSource = webgpu::present_source();
+  const auto presentSource = webgpu::hdr_scene_source(hdrFrame);
   const auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
                                                            webgpu::g_graphicsConfig.surfaceConfiguration.height,
                                                            presentSource.size.width, presentSource.size.height);
@@ -338,7 +338,7 @@ void end_frame() noexcept {
   bool rmlOverlay = false;
 #if AURORA_ENABLE_RMLUI
   if (rmlui::is_initialized()) {
-    auto rmlFrame = rmlui::record_frame(viewport);
+    auto rmlFrame = rmlui::record_frame(viewport, presentSource);
     rmlBindGroup = std::move(rmlFrame.bindGroup);
     rmlOverlay = rmlFrame.overlay;
   }

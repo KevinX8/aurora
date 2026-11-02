@@ -122,8 +122,12 @@ TEST(HdrFrame, ResetsEachFrame) {
   FrameState s;
   s.pending.sceneLinear = true;
   s.pending.unclipLighting = true;
+  int texture = 0;
+  s.pending.sceneTexture = &texture;
   s.begin_frame();
   EXPECT_FALSE(s.pending.sceneLinear);
+  // A mod that stops grading must not leave a stale texture presented.
+  EXPECT_EQ(s.pending.sceneTexture, nullptr);
   EXPECT_TRUE(s.unclip.unclipLighting);
   s.begin_frame();
   EXPECT_FALSE(s.unclip.unclipLighting);
