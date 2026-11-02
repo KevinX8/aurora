@@ -671,6 +671,11 @@ fn fs_premultiplied_alpha(in: VertexOutput) -> @location(0) vec4<f32> {
                          ui_format());
 }
 
+// Float in HDR so the presented frame keeps above-white and wide-gamut values; SDR is unchanged.
+wgpu::TextureFormat resample_format() noexcept {
+  return g_hdrMode != AURORA_HDR_OFF ? wgpu::TextureFormat::RGBA16Float : g_graphicsConfig.surfaceConfiguration.format;
+}
+
 void create_resample_pipeline() {
   wgpu::ShaderSourceWGSL sourceDescriptor{};
   sourceDescriptor.code = resampleShaderSource;
@@ -680,7 +685,7 @@ void create_resample_pipeline() {
   };
   auto module = g_device.CreateShaderModule(&moduleDescriptor);
   const std::array colorTargets{wgpu::ColorTargetState{
-      .format = g_graphicsConfig.surfaceConfiguration.format,
+      .format = resample_format(),
       .writeMask = wgpu::ColorWriteMask::All,
   }};
   const wgpu::FragmentState fragmentState{
@@ -895,8 +900,8 @@ const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& en
   const uint32_t width = viewport_extent(viewport.width);
   const uint32_t height = viewport_extent(viewport.height);
   if (!g_resampledFrameBuffer.view || g_resampledFrameBuffer.size.width != width ||
-      g_resampledFrameBuffer.size.height != height || g_resampledFrameBuffer.format != source.format) {
-    g_resampledFrameBuffer = create_render_texture(width, height, false);
+      g_resampledFrameBuffer.size.height != height || g_resampledFrameBuffer.format != resample_format()) {
+    g_resampledFrameBuffer = create_render_texture(width, height, false, resample_format());
   }
 
   const ResampleUniformBlock uniform{
