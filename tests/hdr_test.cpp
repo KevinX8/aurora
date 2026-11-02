@@ -15,7 +15,9 @@ TEST(HdrShader, TevClampUnclipped) {
   ASSERT_NE(off.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
   const std::string on = aurora::gx::tev_color_op(GX_TEV_ADD, "", "", true, true, "a", "b", "c", "d");
   EXPECT_NE(on.find(", vec3f(0.0), vec3f(4.0))"), std::string::npos);
-  EXPECT_EQ(on.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
+  // The lerp factor stays [0,1] (8-bit on hardware): above 1, (1 - c) goes negative and
+  // subtracts `a`, turning overbright surfaces black/blue.
+  EXPECT_NE(on.find("mix(a, b, clamp(c, vec3f(0.0), vec3f(1.0)))"), std::string::npos);
 }
 
 // Alpha is a blend/coverage factor: above 1.0, (1 - alpha) blends go negative and punch black
@@ -79,8 +81,7 @@ TEST(HdrShader, BuildSourceUnclipped) {
   config.unclipTev = true;
   config.unclipLighting = true;
   const std::string on = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 0);
-  EXPECT_NE(on.find("vec3f(4.0)"), std::string::npos);
-  EXPECT_EQ(on.find("vec3f(1.0)"), std::string::npos);
+  EXPECT_NE(on.find("vec3f(4.0)"), std::string::npos); // stage output; lerp factor clamp covered above
   EXPECT_NE(on.find("max(lighting, vec4f(0.0))"), std::string::npos);
   EXPECT_EQ(on.find("clamp(lighting"), std::string::npos);
 }

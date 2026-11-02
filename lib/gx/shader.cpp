@@ -865,7 +865,10 @@ std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& 
 // Exposed for unit testing of the unclip clamp behavior (external linkage).
 std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
                          std::string_view a, std::string_view b, std::string_view c, std::string_view d) {
-  std::string expr = tev_op(op, bias, scale, a, b, c, d, "vec3(0)"sv);
+  // Unclipped registers can exceed 1, but the lerp factor must not: it is 8-bit on hardware,
+  // and above 1 the (1 - c) term goes negative.
+  const std::string cArg = unclip ? fmt::format("clamp({}, vec3f(0.0), vec3f(1.0))", c) : std::string{c};
+  std::string expr = tev_op(op, bias, scale, a, b, cArg, d, "vec3(0)"sv);
   if (clamp) {
     return fmt::format("clamp({}, vec3f(0.0), vec3f({}.0))", expr, unclip ? 4 : 1);
   }

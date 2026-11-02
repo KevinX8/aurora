@@ -174,7 +174,9 @@ fn fs_hdr_encode(in: VertexOutput) -> @location(0) vec4<f32> {
     let scale = uniforms.paper_white / 80.0;
     let scene_lin = select(sign(c) * pow(abs(c), vec3<f32>(2.2)) * scale, c, uniforms.scene_linear != 0u);
     let ui = textureLoad(overlay, vec2<i32>(in.pos.xy), 0);
-    let ui_lin = pow(ui.rgb / max(ui.a, 0.000001), vec3<f32>(2.2)) * ui.a * scale;
+    // Sign-safe like the scene path: float UI layers can carry the scene's negative (wide-gamut) values.
+    let ui_g = ui.rgb / max(ui.a, 0.000001);
+    let ui_lin = sign(ui_g) * pow(abs(ui_g), vec3<f32>(2.2)) * ui.a * scale;
     let o = min(scene_lin * (1.0 - ui.a) + ui_lin, vec3<f32>(uniforms.peak / 80.0));
     if (uniforms.mode == 1u) {
         return vec4<f32>(pq_encode(max(REC709_TO_2020 * o, vec3<f32>(0.0)) * 80.0), 1.0);
