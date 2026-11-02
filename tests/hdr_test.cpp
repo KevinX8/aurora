@@ -18,11 +18,13 @@ TEST(HdrShader, TevClampUnclipped) {
   EXPECT_EQ(on.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
 }
 
-TEST(HdrShader, TevAlphaClampUnclipped) {
-  const std::string off = aurora::gx::tev_alpha_op(GX_TEV_ADD, "", "", true, false, "a", "b", "c", "d");
-  ASSERT_NE(off.find("clamp("), std::string::npos);
-  const std::string on = aurora::gx::tev_alpha_op(GX_TEV_ADD, "", "", true, true, "a", "b", "c", "d");
-  EXPECT_NE(on.find("4.0)"), std::string::npos);
+// Alpha is a blend/coverage factor: above 1.0, (1 - alpha) blends go negative and punch black
+// holes into effects, so TEV unclip must never apply to alpha (tev_alpha_op takes no unclip flag).
+TEST(HdrShader, TevAlphaStaysClampedWhenUnclipped) {
+  const std::string on = aurora::gx::tev_alpha_op(GX_TEV_ADD, "", "", true, "a", "b", "c", "d");
+  EXPECT_NE(on.find("clamp("), std::string::npos);
+  EXPECT_NE(on.find(", 1.0)"), std::string::npos);
+  EXPECT_EQ(on.find("4.0)"), std::string::npos);
 }
 
 TEST(HdrShader, LightingUnclipped) {

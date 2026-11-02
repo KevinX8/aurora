@@ -872,13 +872,11 @@ std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view sca
   return fmt::format("clamp({}, vec3f(-4.0), vec3f(4.0))", expr);
 }
 
-std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
-                         std::string_view a, std::string_view b, std::string_view c, std::string_view d) {
+// No unclip for alpha: it is a blend/coverage factor, and (1 - alpha) blends break above 1.0.
+std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d) {
   std::string expr = tev_op(op, bias, scale, a, b, c, d, "0.0"sv);
-  if (clamp) {
-    return fmt::format("clamp({}, 0.0, {}.0)", expr, unclip ? 4 : 1);
-  }
-  return fmt::format("clamp({}, -4.0, 4.0)", expr);
+  return clamp ? fmt::format("clamp({}, 0.0, 1.0)", expr) : fmt::format("clamp({}, -4.0, 4.0)", expr);
 }
 
 std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode,
@@ -1119,7 +1117,7 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
       };
       std::string_view outReg = regName[stage.alphaOp.outReg];
       std::string op = tev_alpha_op(stage.alphaOp.op, tev_bias(stage.alphaOp.bias), tev_scale(stage.alphaOp.scale),
-                                    stage.alphaOp.clamp, config.unclipTev, alpha_arg(stage.alphaPass.a),
+                                    stage.alphaOp.clamp, alpha_arg(stage.alphaPass.a),
                                     alpha_arg(stage.alphaPass.b), alpha_arg(stage.alphaPass.c),
                                     alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
       fragmentFn += fmt::format("\n    {0}.a = {1};", outReg, op);

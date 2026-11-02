@@ -552,8 +552,8 @@ GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept;
 // Exposed for unit testing of the unclip clamp behavior.
 std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
                          std::string_view a, std::string_view b, std::string_view c, std::string_view d);
-std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, bool unclip,
-                         std::string_view a, std::string_view b, std::string_view c, std::string_view d);
+std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d);
 std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha);
 
 u8 comp_type_size(GXAttr attr, GXCompType type) noexcept;
