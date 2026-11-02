@@ -2,6 +2,7 @@
 
 #include "webgpu/hdr.hpp"
 #include "gx/gx.hpp"
+#include "gx/pipeline.hpp"
 
 #include <array>
 #include <cmath>
@@ -64,13 +65,22 @@ TEST(HdrShader, BuildSourceUnclipped) {
   stage.colorPass.a = GX_CC_RASC;
   stage.channelId = GX_COLOR0;
   config.colorChannels[0].lightingEnabled = true;
-  const std::string off = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 1);
-  EXPECT_EQ(off.find("gain0"), std::string::npos);
+  // Side buffers at locations 1/2 (no normal target).
+  const std::string off = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, UINT32_MAX, 1, 2);
+  EXPECT_NE(off.find("@location(1) hdr_gain: vec4f"), std::string::npos);
+  EXPECT_NE(off.find("out.hdr_gain = vec4f(vec3f(1.0), hdr_src.a);"), std::string::npos);
+  EXPECT_NE(off.find("out.hdr_glow = vec4f(vec3f(0.0), hdr_src.a);"), std::string::npos); // lit: no glow
   config.unclipLighting = true;
-  const std::string on = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, 1);
+  const std::string on = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, UINT32_MAX, 1, 2);
   EXPECT_NE(on.find("gain0: vec3f"), std::string::npos);
-  EXPECT_NE(on.find("prev = vec4f(prev.rgb * in.gain0, prev.a);"), std::string::npos);
+  EXPECT_NE(on.find("out.hdr_gain = vec4f(in.gain0, hdr_src.a);"), std::string::npos);
+  EXPECT_EQ(on.find("prev.rgb * in.gain"), std::string::npos); // gain no longer touches the 8-bit frame
   EXPECT_EQ(on.find("vec3f(4.0)"), std::string::npos);
+  config.colorChannels[0].lightingEnabled = false;
+  const std::string unlit = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, UINT32_MAX, 1, 2);
+  EXPECT_NE(unlit.find("out.hdr_glow = vec4f(hdr_src.rgb, hdr_src.a);"), std::string::npos);
+  // Without side buffers the output is unchanged (single color return).
+  EXPECT_EQ(aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None).find("hdr_"), std::string::npos);
 }
 
 TEST(HdrMode, KeepsWhenOffered) {
@@ -138,4 +148,35 @@ TEST(HdrFrame, PendingDefaultsToConfigNits) {
   s.begin_frame();
   EXPECT_FLOAT_EQ(s.pending.paperWhiteNits, 250.f);
   EXPECT_FLOAT_EQ(s.pending.peakNits, 800.f);
+}
+
+// HDR side buffers: blend factors per draw class (gain: lighting gain, glow: unsaturated additive color).
+TEST(HdrSideBlend, PerDrawClass) {
+  aurora::gx::PipelineConfig config{};
+  config.blendMode = GX_BM_NONE;
+  auto b = aurora::gx::hdr_side_blends(config);
+  EXPECT_TRUE(b.gain.write && b.gain.replace);
+  EXPECT_TRUE(b.glow.write);
+  EXPECT_EQ(b.glow.state.color.srcFactor, wgpu::BlendFactor::Zero); // opaque clears glow behind it
+  EXPECT_EQ(b.glow.state.color.dstFactor, wgpu::BlendFactor::Zero);
+
+  config.blendMode = GX_BM_BLEND;
+  config.blendFacSrc = GX_BL_SRCALPHA;
+  config.blendFacDst = GX_BL_INVSRCALPHA;
+  b = aurora::gx::hdr_side_blends(config);
+  EXPECT_EQ(b.gain.state.color.srcFactor, wgpu::BlendFactor::SrcAlpha);
+  EXPECT_EQ(b.gain.state.color.dstFactor, wgpu::BlendFactor::OneMinusSrcAlpha);
+  EXPECT_EQ(b.glow.state.color.srcFactor, wgpu::BlendFactor::Zero); // translucent fades glow, adds none
+  EXPECT_EQ(b.glow.state.color.dstFactor, wgpu::BlendFactor::OneMinusSrcAlpha);
+
+  config.blendFacDst = GX_BL_ONE; // additive (SrcAlpha, One)
+  b = aurora::gx::hdr_side_blends(config);
+  EXPECT_FALSE(b.gain.write);
+  EXPECT_TRUE(b.glow.write);
+  EXPECT_EQ(b.glow.state.color.srcFactor, wgpu::BlendFactor::SrcAlpha);
+  EXPECT_EQ(b.glow.state.color.dstFactor, wgpu::BlendFactor::One);
+
+  config.blendMode = GX_BM_SUBTRACT;
+  b = aurora::gx::hdr_side_blends(config);
+  EXPECT_FALSE(b.gain.write || b.glow.write);
 }

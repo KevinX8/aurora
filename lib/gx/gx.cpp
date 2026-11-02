@@ -327,6 +327,28 @@ void set_render_scissor(const gfx::ClipRect& scissor) noexcept {
 
 const gfx::TextureBind& get_texture(GXTexMapID id) noexcept { return g_gxState.textures[static_cast<size_t>(id)]; }
 
+HdrSideBlends hdr_side_blends(const PipelineConfig& config) noexcept {
+  const auto both = [](wgpu::BlendFactor src, wgpu::BlendFactor dst) {
+    const wgpu::BlendComponent component{.operation = wgpu::BlendOperation::Add, .srcFactor = src, .dstFactor = dst};
+    return wgpu::BlendState{.color = component, .alpha = component};
+  };
+  const bool blend = config.blendMode == GX_BM_BLEND;
+  const auto src = config.blendFacSrc;
+  const auto dst = config.blendFacDst;
+  HdrSideBlends out;
+  if (config.blendMode == GX_BM_NONE || (blend && src == GX_BL_ONE && dst == GX_BL_ZERO)) {
+    out.gain = {.write = true, .replace = true};
+    out.glow = {.write = true, .state = both(wgpu::BlendFactor::Zero, wgpu::BlendFactor::Zero)};
+  } else if (blend && src == GX_BL_SRCALPHA && dst == GX_BL_INVSRCALPHA) {
+    out.gain = {.write = true, .state = both(wgpu::BlendFactor::SrcAlpha, wgpu::BlendFactor::OneMinusSrcAlpha)};
+    out.glow = {.write = true, .state = both(wgpu::BlendFactor::Zero, wgpu::BlendFactor::OneMinusSrcAlpha)};
+  } else if (blend && dst == GX_BL_ONE && (src == GX_BL_ONE || src == GX_BL_SRCALPHA)) {
+    const auto srcFactor = src == GX_BL_ONE ? wgpu::BlendFactor::One : wgpu::BlendFactor::SrcAlpha;
+    out.glow = {.write = true, .state = both(srcFactor, wgpu::BlendFactor::One)};
+  }
+  return out;
+}
+
 wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, const gfx::RenderTargetLayout& layout,
                                     const PipelineOptions& options, ArrayRef<wgpu::VertexBufferLayout> vtxBuffers,
                                     wgpu::ShaderModule shader, const char* label) noexcept {
@@ -356,6 +378,20 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, const gfx::Ren
   }
   colorTargets[gfx::SceneColorAttachmentIndex].blend = &blendState;
   colorTargets[gfx::SceneColorAttachmentIndex].writeMask = to_write_mask(options.colorUpdate, options.alphaUpdate);
+  // HDR side buffers: the shader always outputs (gain, src alpha) and (unlit color, src alpha); these
+  // per-draw blend factors decide what each draw does to them (see hdr_side_blend).
+  const auto sideBlends = hdr_side_blends(config);
+  for (uint32_t i = 0; i < layout.colorAttachmentCount; ++i) {
+    const auto semantic = layout.colorAttachments[i].semantic;
+    if (semantic != gfx::ColorAttachmentSemantic::HdrGain && semantic != gfx::ColorAttachmentSemantic::HdrGlow) {
+      continue;
+    }
+    const auto& side = semantic == gfx::ColorAttachmentSemantic::HdrGain ? sideBlends.gain : sideBlends.glow;
+    if (options.colorUpdate && side.write) {
+      colorTargets[i].writeMask = wgpu::ColorWriteMask::All;
+      colorTargets[i].blend = side.replace ? nullptr : &side.state;
+    }
+  }
   const wgpu::FragmentState fragmentState{
       .module = shader,
       .entryPoint = "fs_main",

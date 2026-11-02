@@ -879,9 +879,11 @@ std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view sca
 }
 
 std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode,
-                                uint32_t normalAttachment) noexcept {
+                                uint32_t normalAttachment, uint32_t hdrGainAttachment,
+                                uint32_t hdrGlowAttachment) noexcept {
   ZoneScoped;
-  const auto hash = xxh3_hash(dstAlphaMode, xxh3_hash(normalAttachment, xxh3_hash(config)));
+  const auto hash = xxh3_hash(
+      dstAlphaMode, xxh3_hash(hdrGlowAttachment, xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
   const auto info = build_shader_info(config);
   if (EnableDebugPrints && !s_seenShaders.contains(hash)) {
     s_seenShaders.insert(hash);
@@ -1132,13 +1134,16 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
   if (lastStage.alphaOp.outReg != 0) {
     fragmentFn += fmt::format("\n    prev.a = {0}.a;", regName[lastStage.alphaOp.outReg]);
   }
-  // Overbright lighting gain (before fog). Skipped when the output relies on 8-bit wraparound.
-  if (config.unclipLighting && prevColorNormalized && !UsePerPixelLighting) {
-    for (int i = 0; i < info.sampledColorChannels.size(); ++i) {
-      if (info.sampledColorChannels.test(i) && config.colorChannels[i].lightingEnabled) {
-        fragmentFn += fmt::format("\n    prev = vec4f(prev.rgb * in.gain{}, prev.a);", i);
-        break;
+  // HDR side-buffer values: the lighting gain of the first lit channel, and whether the draw is unlit
+  // (only unlit additive draws count as glow).
+  std::string hdrGainExpr = "vec3f(1.0)";
+  bool hdrLit = false;
+  for (int i = 0; i < info.sampledColorChannels.size(); ++i) {
+    if (info.sampledColorChannels.test(i) && config.colorChannels[i].lightingEnabled) {
+      if (!hdrLit && config.unclipLighting && !UsePerPixelLighting) {
+        hdrGainExpr = fmt::format("in.gain{}", i);
       }
+      hdrLit = true;
     }
   }
 
@@ -1655,6 +1660,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
     fragmentFn += "\n    prev = vec4f(in.nrm, prev.a);";
   }
 
+  const bool hdrSide = hdrGainAttachment != UINT32_MAX && hdrGlowAttachment != UINT32_MAX;
+  if (hdrSide) {
+    // Side-buffer blends use the real source alpha, before destination-alpha replacement.
+    fragmentFn += "\n    let hdr_src = prev;";
+  }
   if (dstAlphaMode == DstAlphaMode::Replace) {
     // GX destination alpha is set via the blend constant
     fragmentFn += "\n    prev.a = 1.0;";
@@ -1663,15 +1673,25 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
   std::string fragmentOutput;
   std::string_view fragmentOutputType = "@location(0) vec4f"sv;
   std::string fragmentReturn = "\n    return prev;"s;
-  if (normalAttachment != UINT32_MAX) {
-    fragmentOutput = fmt::format(
-        "\nstruct FragmentOutput {{\n"
-        "    @location(0) color: vec4f,\n"
-        "    @location({}) normal: vec4f,\n"
-        "}};\n",
-        normalAttachment);
+  if (normalAttachment != UINT32_MAX || hdrSide) {
+    std::string fields = "    @location(0) color: vec4f,\n";
+    if (normalAttachment != UINT32_MAX) {
+      fields += fmt::format("    @location({}) normal: vec4f,\n", normalAttachment);
+    }
+    if (hdrSide) {
+      fields += fmt::format("    @location({}) hdr_gain: vec4f,\n    @location({}) hdr_glow: vec4f,\n",
+                            hdrGainAttachment, hdrGlowAttachment);
+    }
+    fragmentOutput = fmt::format("\nstruct FragmentOutput {{\n{}}};\n", fields);
     fragmentOutputType = "FragmentOutput"sv;
     fragmentReturn = "\n    var out: FragmentOutput;\n    out.color = prev;";
+    if (hdrSide) {
+      fragmentReturn += fmt::format("\n    out.hdr_gain = vec4f({}, hdr_src.a);"
+                                    "\n    out.hdr_glow = vec4f({}, hdr_src.a);",
+                                    hdrGainExpr, hdrLit ? "vec3f(0.0)" : "hdr_src.rgb");
+    }
+  }
+  if (normalAttachment != UINT32_MAX) {
     if (useNormalTarget) {
       fragmentReturn +=
           "\n    let nrm_len_sq = dot(in.mv_nrm, in.mv_nrm);"
@@ -1680,6 +1700,8 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
     } else {
       fragmentReturn += "\n    out.normal = vec4f(0.5, 0.5, 0.5, 0.0);";
     }
+  }
+  if (normalAttachment != UINT32_MAX || hdrSide) {
     fragmentReturn += "\n    return out;";
   }
 
@@ -2078,13 +2100,27 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config, const gfx::RenderTar
                                 DstAlphaMode dstAlphaMode) noexcept {
   ZoneScoped;
   uint32_t normalAttachment = UINT32_MAX;
+  uint32_t hdrGainAttachment = UINT32_MAX;
+  uint32_t hdrGlowAttachment = UINT32_MAX;
   for (uint32_t i = 0; i < layout.colorAttachmentCount; ++i) {
-    if (layout.colorAttachments[i].semantic == gfx::ColorAttachmentSemantic::Normal) {
+    switch (layout.colorAttachments[i].semantic) {
+    case gfx::ColorAttachmentSemantic::Normal:
       normalAttachment = i;
+      break;
+    case gfx::ColorAttachmentSemantic::HdrGain:
+      hdrGainAttachment = i;
+      break;
+    case gfx::ColorAttachmentSemantic::HdrGlow:
+      hdrGlowAttachment = i;
+      break;
+    default:
+      break;
     }
   }
-  const auto shaderSource = build_shader_source(config, dstAlphaMode, normalAttachment);
-  const auto hash = xxh3_hash(dstAlphaMode, xxh3_hash(normalAttachment, xxh3_hash(config)));
+  const auto shaderSource =
+      build_shader_source(config, dstAlphaMode, normalAttachment, hdrGainAttachment, hdrGlowAttachment);
+  const auto hash = xxh3_hash(
+      dstAlphaMode, xxh3_hash(hdrGlowAttachment, xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
   wgpu::ShaderSourceWGSL wgslDescriptor{};
   wgslDescriptor.code = shaderSource.c_str();
   const auto label = fmt::format("GX Shader {:x}", hash);

@@ -53,6 +53,8 @@ TextureWithSampler g_frameBuffer;
 TextureWithSampler g_frameBufferResolved;
 TextureWithSampler g_depthBuffer;
 TextureWithSampler g_normalBuffer;
+TextureWithSampler g_hdrGainBuffer;
+TextureWithSampler g_hdrGlowBuffer;
 
 // EFB -> XFB copy pipeline
 static wgpu::BindGroupLayout g_CopyBindGroupLayout;
@@ -1426,6 +1428,9 @@ void shutdown() {
   g_depthBuffer = {};
   g_normalBuffer = {};
   g_graphicsConfig.normalBuffer = false;
+  g_hdrGainBuffer = {};
+  g_hdrGlowBuffer = {};
+  g_graphicsConfig.hdrSideBuffers = false;
   g_queue = {};
   g_surface = {};
   g_device = {};
@@ -1470,6 +1475,12 @@ static void resize_swapchain_internal(uint32_t width, uint32_t height, uint32_t 
   g_depthBuffer = create_depth_texture(width, height);
   if (g_graphicsConfig.normalBuffer) {
     g_normalBuffer = create_normal_texture(width, height);
+  }
+  // shortcut: single-sample only (like the normal buffer); MSAA would need multisampled side buffers.
+  g_graphicsConfig.hdrSideBuffers = g_hdrMode != AURORA_HDR_OFF && g_graphicsConfig.msaaSamples == 1;
+  if (g_graphicsConfig.hdrSideBuffers) {
+    g_hdrGainBuffer = create_render_texture(width, height, false, HdrSideBufferFormat);
+    g_hdrGlowBuffer = create_render_texture(width, height, false, HdrSideBufferFormat);
   }
   if (g_hdrMode != AURORA_HDR_OFF) {
     if (!g_uiOverlay.view || g_uiOverlay.size.width != nativeWidth || g_uiOverlay.size.height != nativeHeight) {

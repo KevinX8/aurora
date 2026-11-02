@@ -12,6 +12,7 @@ struct SDL_Window;
 
 namespace aurora::webgpu {
 inline constexpr wgpu::TextureFormat NormalBufferFormat = wgpu::TextureFormat::RGB10A2Unorm;
+inline constexpr wgpu::TextureFormat HdrSideBufferFormat = wgpu::TextureFormat::RGBA16Float;
 
 struct GraphicsConfig {
   wgpu::SurfaceConfiguration surfaceConfiguration;
@@ -20,6 +21,7 @@ struct GraphicsConfig {
   uint32_t msaaSamples;
   uint16_t textureAnisotropy;
   bool normalBuffer = false;
+  bool hdrSideBuffers = false;
 };
 struct TextureWithSampler {
   wgpu::Texture texture;
@@ -53,6 +55,8 @@ extern TextureWithSampler g_frameBuffer;
 extern TextureWithSampler g_frameBufferResolved;
 extern TextureWithSampler g_depthBuffer;
 extern TextureWithSampler g_normalBuffer;
+extern TextureWithSampler g_hdrGainBuffer;
+extern TextureWithSampler g_hdrGlowBuffer;
 extern wgpu::RenderPipeline g_CopyPipeline;
 extern wgpu::RenderPipeline g_CopyPremultipliedAlphaPipeline;
 extern wgpu::BindGroup g_CopyBindGroup;

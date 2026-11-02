@@ -301,6 +301,17 @@ RenderTargetLayout scene_render_target_layout() noexcept {
         .height = webgpu::g_normalBuffer.size.height,
     };
   }
+  if (webgpu::g_graphicsConfig.hdrSideBuffers) {
+    for (const auto& [semantic, buffer] : {std::pair{ColorAttachmentSemantic::HdrGain, &webgpu::g_hdrGainBuffer},
+                                           std::pair{ColorAttachmentSemantic::HdrGlow, &webgpu::g_hdrGlowBuffer}}) {
+      layout.colorAttachments[layout.colorAttachmentCount++] = {
+          .semantic = semantic,
+          .format = buffer->format,
+          .width = buffer->size.width,
+          .height = buffer->size.height,
+      };
+    }
+  }
   finalize_render_target_layout(layout);
   return layout;
 }
