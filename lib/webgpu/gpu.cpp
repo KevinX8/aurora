@@ -410,7 +410,9 @@ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool m
 }
 
 wgpu::TextureFormat ui_format() noexcept {
-  return g_hdrMode != AURORA_HDR_OFF ? wgpu::TextureFormat::RGBA8Unorm
+  // Float in HDR: RmlUi backdrop-filter menus seed their layer with the game frame, and an
+  // 8-bit layer would clip the scene's above-paper-white values while the menu is open.
+  return g_hdrMode != AURORA_HDR_OFF ? wgpu::TextureFormat::RGBA16Float
                                      : g_graphicsConfig.surfaceConfiguration.format;
 }
 
