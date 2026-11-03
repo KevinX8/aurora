@@ -125,6 +125,12 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     endif ()
     set(DAWN_BUILD_SAMPLES OFF CACHE INTERNAL "Disable Dawn sample applications")
     set(DAWN_BUILD_BENCHMARKS OFF CACHE INTERNAL "Disable Dawn benchmarks")
+    # wire/protobuf is dead weight for the in-process webgpu_dawn aurora links; the
+    # cross toolchains (iOS/Android) cannot host-build protoc and fail configure.
+    # tint's IR binary cache format requires protobuf; Dawn falls back to spirv-cross
+    # serialization, so turn the pair off together.
+    set(DAWN_BUILD_PROTOBUF OFF CACHE INTERNAL "aurora uses webgpu_dawn in process, no wire")
+    set(TINT_BUILD_IR_BINARY OFF CACHE INTERNAL "needs protobuf; Dawn uses spirv-cross serialization")
     # aurora consumes Dawn via headers, never C++20 modules; gcc toolchains (CI runners)
     # pass Dawn's module compile probe but ship no CMake import scanner, breaking generate.
     set(DAWN_SUPPORTS_CXX_MODULES OFF CACHE INTERNAL "aurora uses headers, not modules")
