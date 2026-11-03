@@ -72,14 +72,6 @@ inline bool hdr_backend_supported(wgpu::BackendType backend) noexcept {
 }
 
 // nits in, ST 2084 code value out
-#if defined(__APPLE__)
-// Main screen's extended-range headroom (max value / SDR white): live on iOS, static max on
-// macOS. shortcut: main screen, single window; upgrade for multi-monitor windows.
-float aurora_edr_headroom();
-#else
-inline float aurora_edr_headroom() { return 1.f; }
-#endif
-
 // Apple EDR interprets 1.0 as the OS SDR white (paper white) and offers `headroom` times that.
 // scRGB (1.0 = 80 nits) -> EDR, clamped to the screen's current headroom.
 inline float edr_output(float scrgb, float paperWhiteNits, float headroom) {
@@ -125,3 +117,13 @@ inline FrameState g_frameState;
 inline const AuroraHdrFrame& active_unclip() { return g_frameState.unclip; }
 
 } // namespace aurora::webgpu::hdr
+
+namespace aurora::webgpu {
+// Main screen's extended-range headroom (max value / SDR white): live on iOS, static max on
+// macOS. shortcut: main screen, single window; upgrade for multi-monitor windows.
+#if defined(__APPLE__)
+float aurora_edr_headroom();
+#else
+inline float aurora_edr_headroom() { return 1.f; }
+#endif
+} // namespace aurora::webgpu
