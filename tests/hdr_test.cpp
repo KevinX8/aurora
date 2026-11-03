@@ -85,17 +85,17 @@ TEST(HdrShader, BuildSourceUnclipped) {
 
 TEST(HdrMode, KeepsWhenOffered) {
   std::array f{wgpu::TextureFormat::BGRA8Unorm, wgpu::TextureFormat::RGB10A2Unorm};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, f), AURORA_HDR_HDR10);
+  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, f, wgpu::BackendType::Vulkan), AURORA_HDR_HDR10);
 }
 
 TEST(HdrMode, FallsBackWhenMissing) {
   std::array f{wgpu::TextureFormat::BGRA8Unorm};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_SCRGB, f), AURORA_HDR_OFF);
+  EXPECT_EQ(resolve_mode(AURORA_HDR_SCRGB, f, wgpu::BackendType::Vulkan), AURORA_HDR_OFF);
 }
 
 TEST(HdrMode, OffStaysOff) {
   std::array f{wgpu::TextureFormat::RGBA16Float};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_OFF, f), AURORA_HDR_OFF);
+  EXPECT_EQ(resolve_mode(AURORA_HDR_OFF, f, wgpu::BackendType::Vulkan), AURORA_HDR_OFF);
 }
 
 TEST(HdrMode, ColorManagement) {
@@ -116,6 +116,28 @@ TEST(HdrMode, Backends) {
   EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::OpenGL));
   EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::OpenGLES));
   EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::Null));
+}
+
+TEST(HdrMode, Hdr10OnMetalUsesScrgb) {
+  const wgpu::TextureFormat f[] = {wgpu::TextureFormat::RGBA16Float};
+  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, f, wgpu::BackendType::Metal), AURORA_HDR_SCRGB);
+  // scRGB offered, scRGB requested stays.
+  EXPECT_EQ(resolve_mode(AURORA_HDR_SCRGB, f, wgpu::BackendType::Metal), AURORA_HDR_SCRGB);
+  // Vulkan keeps HDR10 when its format is offered.
+  const wgpu::TextureFormat g[] = {wgpu::TextureFormat::RGB10A2Unorm};
+  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, g, wgpu::BackendType::Vulkan), AURORA_HDR_HDR10);
+}
+
+TEST(HdrEdr, ClampsToHeadroom) {
+  // Paper white (scRGB 2.5 at 200 nits) maps to EDR 1.0 (the OS SDR white).
+  EXPECT_NEAR(edr_output(2.5f, 200.f, 8.f), 1.f, 1e-6);
+  // 1000-nit highlight (scRGB 12.5) scales to EDR 5, inside 8x headroom.
+  EXPECT_NEAR(edr_output(12.5f, 200.f, 8.f), 5.f, 1e-5);
+  // Anything above the screen's current headroom clamps to it.
+  EXPECT_NEAR(edr_output(100.f, 200.f, 8.f), 8.f, 1e-6);
+  // Zero stays zero; headroom 1 (no EDR) caps at 1.
+  EXPECT_NEAR(edr_output(0.f, 200.f, 8.f), 0.f, 1e-9);
+  EXPECT_NEAR(edr_output(4.f, 200.f, 1.f), 1.f, 1e-6);
 }
 
 TEST(HdrPq, Endpoints) {

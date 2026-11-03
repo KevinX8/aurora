@@ -115,6 +115,10 @@ struct HdrEncodeUniformBlock {
   uint32_t sceneLinear;
   float paperWhite;
   float peak;
+  // Apple EDR: scale scRGB by 80/paperWhite and clamp to the screen's current headroom
+  // (1 = user's SDR white). Inactive elsewhere (scale 1, huge peak).
+  float edrScale;
+  float edrPeak;
 };
 
 // PQ constants are prepended from hdr.hpp so shader and CPU math share one source.
@@ -124,6 +128,8 @@ struct Uniforms {
     scene_linear: u32,
     paper_white: f32,
     peak: f32,
+    edr_scale: f32,
+    edr_peak: f32,
 };
 
 struct VertexOutput {
@@ -183,7 +189,8 @@ fn fs_hdr_encode(in: VertexOutput) -> @location(0) vec4<f32> {
     if (uniforms.mode == 1u) {
         return vec4<f32>(pq_encode(max(REC709_TO_2020 * o, vec3<f32>(0.0)) * 80.0), 1.0);
     }
-    return vec4<f32>(o, 1.0);
+    // Apple EDR: 1.0 is the OS SDR white; cap at the screen's current headroom.
+    return vec4<f32>(min(o * uniforms.edr_scale, vec3<f32>(uniforms.edr_peak)), 1.0);
 }
 )WGSL"sv;
 
@@ -952,11 +959,16 @@ const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& en
 void hdr_encode(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& target, const Viewport& viewport,
                 const AuroraHdrFrame& frame) {
   const auto& source = resample_present_source(encoder, viewport, hdr_scene_source(frame));
+  const float edrHeadroom = g_hdrMode == AURORA_HDR_SCRGB && g_backendType == wgpu::BackendType::Metal
+                               ? aurora_edr_headroom()
+                               : 1.f;
   const HdrEncodeUniformBlock uniform{
       .mode = g_hdrMode == AURORA_HDR_HDR10 ? 1u : 2u,
       .sceneLinear = frame.sceneLinear ? 1u : 0u,
       .paperWhite = frame.paperWhiteNits,
       .peak = frame.peakNits,
+      .edrScale = edrHeadroom > 1.f ? 80.f / std::max(frame.paperWhiteNits, 1.f) : 1.f,
+      .edrPeak = edrHeadroom > 1.f ? std::max(edrHeadroom, 1.f) : std::numeric_limits<float>::max(),
   };
   AURORA_ASSERT(gfx::render_worker::is_worker_thread(), "HDR encode queue write must run on the render worker");
   g_queue.WriteBuffer(g_HdrEncodeUniformBuffer, 0, &uniform, sizeof(uniform));
@@ -1358,7 +1370,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
     Log.warn("HDR mode {} is not supported on the {} backend; using SDR",
              magic_enum::enum_name(g_config.hdrMode), magic_enum::enum_name(g_backendType));
   } else {
-    g_hdrMode = hdr::resolve_mode(g_config.hdrMode, offeredFormats);
+    g_hdrMode = hdr::resolve_mode(g_config.hdrMode, offeredFormats, g_backendType);
     if (g_hdrMode != g_config.hdrMode) {
       std::string formatList;
       for (const auto format : offeredFormats) {

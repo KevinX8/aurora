@@ -29,9 +29,14 @@ inline wgpu::TextureFormat required_format(AuroraHdrMode mode) {
   }
 }
 
-inline AuroraHdrMode resolve_mode(AuroraHdrMode requested, std::span<const wgpu::TextureFormat> offered) {
+inline AuroraHdrMode resolve_mode(AuroraHdrMode requested, std::span<const wgpu::TextureFormat> offered,
+                                  wgpu::BackendType backend) {
   if (requested == AURORA_HDR_OFF) {
     return AURORA_HDR_OFF;
+  }
+  // WebGPU has no HDR10 path on Metal: serve scRGB EDR instead of dropping to SDR.
+  if (requested == AURORA_HDR_HDR10 && backend == wgpu::BackendType::Metal) {
+    return AURORA_HDR_SCRGB;
   }
   const auto required = required_format(requested);
   for (const auto format : offered) {
@@ -67,6 +72,22 @@ inline bool hdr_backend_supported(wgpu::BackendType backend) noexcept {
 }
 
 // nits in, ST 2084 code value out
+#if defined(__APPLE__)
+// Main screen's extended-range headroom (max value / SDR white): live on iOS, static max on
+// macOS. shortcut: main screen, single window; upgrade for multi-monitor windows.
+float aurora_edr_headroom();
+#else
+inline float aurora_edr_headroom() { return 1.f; }
+#endif
+
+// Apple EDR interprets 1.0 as the OS SDR white (paper white) and offers `headroom` times that.
+// scRGB (1.0 = 80 nits) -> EDR, clamped to the screen's current headroom.
+inline float edr_output(float scrgb, float paperWhiteNits, float headroom) {
+  const float scale = (paperWhiteNits > 0.f && headroom > 1.f) ? 80.f / paperWhiteNits : 1.f;
+  const float cap = std::max(headroom, 1.f);
+  return std::min(scrgb * scale, cap);
+}
+
 inline float pq_encode(float nits) {
   const double y = std::pow(std::max<double>(nits, 0.0) / 10000.0, PQ_M1);
   return static_cast<float>(std::pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), PQ_M2));

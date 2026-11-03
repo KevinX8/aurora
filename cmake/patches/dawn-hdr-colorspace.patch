@@ -293,6 +293,98 @@ index 845211eb6c..f38a0a8b88 100644
      Config mConfig;
      ComPtr<IDXGISwapChain3> mDXGISwapChain;
  };
+diff --git a/src/dawn/native/metal/PhysicalDeviceMTL.mm b/src/dawn/native/metal/PhysicalDeviceMTL.mm
+index 2d7e99505c..ca582da5ca 100644
+--- a/src/dawn/native/metal/PhysicalDeviceMTL.mm
++++ b/src/dawn/native/metal/PhysicalDeviceMTL.mm
+@@ -35,6 +35,7 @@
+ #include "src/dawn/common/SystemUtils.h"
+ #include "src/dawn/native/ChainUtils.h"
+ #include "src/dawn/native/Instance.h"
++#include "src/dawn/native/Surface.h"
+ #include "src/dawn/native/metal/BufferMTL.h"
+ #include "src/dawn/native/metal/DeviceMTL.h"
+ #include "src/dawn/native/metal/UtilsMetal.h"
+@@ -48,6 +49,13 @@
+ #include "src/dawn/common/IOKitRef.h"
+ #endif
+ 
++#import <CoreGraphics/CoreGraphics.h>
++#if DAWN_PLATFORM_IS(IOS)
++#import <UIKit/UIKit.h>
++#else
++#import <AppKit/AppKit.h>
++#endif
++
+ #include <string>
+ #include <vector>
+ 
+@@ -346,7 +354,7 @@ bool PhysicalDevice::SupportsFeatureLevel(wgpu::FeatureLevel, InstanceBase* inst
+ 
+ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapabilities(
+     InstanceBase* instance,
+-    const Surface*) const {
++    const Surface* surface) const {
+     PhysicalDeviceSurfaceCapabilities capabilities;
+ 
+     capabilities.usages = wgpu::TextureUsage::RenderAttachment |
+@@ -362,6 +370,32 @@ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapab
+     capabilities.formats.push_back(wgpu::TextureFormat::RGB10A2Unorm);
+ #endif  // DAWN_PLATFORM_IS(MACOS)
+ 
++    // Dusklight HDR: a color-managed (scRGB) surface presents RGBA16Float EDR only, and only
++    // on a screen with extended-range headroom. An empty format list makes the application
++    // fall back to SDR. HDR10 (Rec.2100 PQ) has no Metal path in WebGPU.
++    if (const auto colorManagement = surface->GetColorManagement()) {
++        const bool edrCapable = []() {
++#if DAWN_PLATFORM_IS(IOS)
++            if (@available(iOS 16.4, tvOS 16.4, *)) {
++                return UIScreen.mainScreen.maximumExtendedEDRContentHeadroom
++                           .maximumExtendedDynamicRangeColorComponentValue > 1.0;
++            }
++            return false;
++#else
++            if (@available(macOS 10.11, *)) {
++                return NSScreen.mainScreen
++                           .maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0;
++            }
++            return false;
++#endif
++        }();
++        if (colorManagement->colorSpace == wgpu::PredefinedColorSpace::SRGBLinear && edrCapable) {
++            capabilities.formats = {wgpu::TextureFormat::RGBA16Float};
++        } else {
++            capabilities.formats.clear();
++        }
++    }
++
+     capabilities.presentModes = {
+         wgpu::PresentMode::Fifo,
+         wgpu::PresentMode::Immediate,
+diff --git a/src/dawn/native/metal/SwapChainMTL.mm b/src/dawn/native/metal/SwapChainMTL.mm
+index b9a9d07b3a..061dc058ac 100644
+--- a/src/dawn/native/metal/SwapChainMTL.mm
++++ b/src/dawn/native/metal/SwapChainMTL.mm
+@@ -79,6 +79,19 @@ MaybeError SwapChain::Initialize(SwapChainBase* previousSwapChain) {
+     [*mLayer setDevice:ToBackend(GetDevice())->GetMTLDevice()];
+     [*mLayer setPixelFormat:MetalPixelFormat(GetDevice(), GetFormat())];
+ 
++    // Dusklight HDR: EDR output for an scRGB color-managed surface. Apple EDR interprets 1.0
++    // as the OS SDR white (user-brightness dependent), not 80 nits: the application encodes
++    // its values relative to that, clamped to the screen's current headroom.
++    if (const auto colorManagement = GetSurface()->GetColorManagement();
++        colorManagement && colorManagement->colorSpace == wgpu::PredefinedColorSpace::SRGBLinear) {
++        mLayer.wantsExtendedDynamicRangeContent = YES;
++#if DAWN_PLATFORM_IS(MACOS)
++        mLayer.colorspace = NSColorSpace.extendedLinearSRGBColorSpace.CGColorSpace;
++#else
++        mLayer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
++#endif
++    }
++
+     // TODO(dawn:2320): Check that this behaves as expected by the spec
+     [*mLayer setOpaque:(GetAlphaMode() != wgpu::CompositeAlphaMode::Premultiplied)];
+ 
 diff --git a/src/dawn/native/vulkan/PhysicalDeviceVk.cpp b/src/dawn/native/vulkan/PhysicalDeviceVk.cpp
 index a91b5352bd..3935161d6a 100644
 --- a/src/dawn/native/vulkan/PhysicalDeviceVk.cpp
