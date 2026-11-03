@@ -116,12 +116,6 @@ if (_aurora_dawn_provider STREQUAL "vendor")
   if (NOT TARGET webgpu_dawn)
     message(STATUS "aurora: Fetching Dawn (provider=vendor, linkage=${AURORA_DAWN_LINKAGE})")
 
-    if (MSVC AND AURORA_DAWN_LINKAGE STREQUAL "shared")
-      # A shared monolithic webgpu_dawn exceeds link.exe's 65535-object DLL limit
-      # (LNK1189): every Dawn+tint+abseil object lands in one link. Static is fine.
-      message(STATUS "aurora: vendor linkage shared -> static (MSVC LNK1189 object limit)")
-      set(AURORA_DAWN_LINKAGE static)
-    endif ()
     if (AURORA_DAWN_LINKAGE STREQUAL "shared")
       set(DAWN_BUILD_MONOLITHIC_LIBRARY SHARED CACHE INTERNAL
         "Bundle all dawn components into a single shared library.")
@@ -182,6 +176,13 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     FetchContent_MakeAvailable(dawn)
     if (NOT TARGET webgpu_dawn)
       message(FATAL_ERROR "Failed to make dawn available")
+    endif ()
+    if (WIN32 AND AURORA_DAWN_LINKAGE STREQUAL "shared")
+      # dusklight sets CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS globally (mod binaries need it);
+      # applied to Dawn's DLL it exports every dawn::native/tint/absl symbol and
+      # link.exe hits the 65535-export limit (LNK1189). Dawn exports its C API via
+      # its own dllexport macros - keep that precise set.
+      set_target_properties(webgpu_dawn PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
     endif ()
   else ()
     message(STATUS "aurora: Using existing Dawn")
