@@ -132,10 +132,29 @@ if (_aurora_dawn_provider STREQUAL "vendor")
       set(ABSL_MSVC_STATIC_RUNTIME ON CACHE INTERNAL "Link static runtime libraries")
     endif ()
 
+    # Vendored Dawn carries the HDR patches from cmake/patches (SurfaceColorManagement on
+    # Vulkan/D3D12/Metal + the Rec2100PQ enum), written against the AURORA_DAWN_REF revision.
+    find_package(Git QUIET)
+    file(GLOB _aurora_dawn_hdr_patches CONFIGURE_DEPENDS
+      "${CMAKE_CURRENT_LIST_DIR}/patches/dawn-*.patch")
+    list(SORT _aurora_dawn_hdr_patches)
+    set(_aurora_dawn_patch_command "")
+    if (_aurora_dawn_hdr_patches)
+      if (NOT GIT_FOUND)
+        message(FATAL_ERROR "aurora: git is required to apply Dawn HDR patches for provider=vendor")
+      endif ()
+      # GIT_DIR= detaches git from any enclosing repository: inside a build tree,
+      # plain "git apply" anchors paths to the outer repo root and silently skips
+      # every hunk as out-of-repo.
+      set(_aurora_dawn_patch_command "${CMAKE_COMMAND}" -E env "GIT_DIR="
+        "${GIT_EXECUTABLE}" apply --ignore-whitespace ${_aurora_dawn_hdr_patches})
+    endif ()
+
     include(FetchContent)
     FetchContent_Declare(dawn
       URL "https://github.com/encounter/dawn/archive/${AURORA_DAWN_REF}.tar.gz"
       DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+      PATCH_COMMAND ${_aurora_dawn_patch_command}
       EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(dawn)

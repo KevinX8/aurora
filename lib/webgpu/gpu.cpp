@@ -1324,7 +1324,23 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
   }
   g_queue = g_device.GetQueue();
 
-  const wgpu::Status status = g_surface.GetCapabilities(g_adapter, &g_surfaceCapabilities);
+  wgpu::Status status = g_surface.GetCapabilities(g_adapter, &g_surfaceCapabilities);
+  // A display with no HDR at all reports no formats for a color-managed surface (e.g. Windows
+  // HDR is off). Fall back to SDR by recreating the surface without color management.
+  if (status == wgpu::Status::Success && g_surfaceCapabilities.formatCount == 0 &&
+      g_config.hdrMode != AURORA_HDR_OFF) {
+    Log.warn("HDR mode {} is not offered by the display; using SDR",
+             magic_enum::enum_name(g_config.hdrMode));
+    g_config.hdrMode = AURORA_HDR_OFF;
+    {
+      window::SurfaceLock surfaceLock;
+      release_surface_locked();
+    }
+    if (!create_surface()) {
+      return false;
+    }
+    status = g_surface.GetCapabilities(g_adapter, &g_surfaceCapabilities);
+  }
   if (status != wgpu::Status::Success) {
     Log.error("Failed to get surface capabilities: {}", magic_enum::enum_name(status));
     return false;

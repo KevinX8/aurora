@@ -13,10 +13,10 @@ index 65fe897947..ef7d615223 100644
      },
      "tone mapping mode": {
 diff --git a/src/dawn/native/Surface.cpp b/src/dawn/native/Surface.cpp
-index 8ebe3104cd..96fa18e44a 100644
+index 8ebe3104cd..3ed51e0f87 100644
 --- a/src/dawn/native/Surface.cpp
 +++ b/src/dawn/native/Surface.cpp
-@@ -108,19 +108,30 @@ ResultOrError<UnpackedPtr<SurfaceDescriptor>> ValidateSurfaceDescriptor(
+@@ -108,19 +108,25 @@ ResultOrError<UnpackedPtr<SurfaceDescriptor>> ValidateSurfaceDescriptor(
      UnpackedPtr<SurfaceDescriptor> descriptor;
      DAWN_TRY_ASSIGN(descriptor, ValidateAndUnpack(rawDescriptor));
  
@@ -26,15 +26,10 @@ index 8ebe3104cd..96fa18e44a 100644
 +        // Dusklight HDR: WebGPU's extended tone mapping (sRGB-linear / scRGB output) on every
 +        // backend, plus a fork-only Rec.2100 PQ (HDR10) with standard tone mapping. Other
 +        // combinations are accepted as no-ops, like the specification's standard mode.
-+        const bool extended = colorManagement->toneMappingMode == wgpu::ToneMappingMode::Extended;
-+        if (extended) {
-+            DAWN_INVALID_IF(colorManagement->colorSpace != wgpu::PredefinedColorSpace::SRGBLinear,
-+                            "SurfaceColorManagement extended tone mapping requires the sRGB linear "
-+                            "color space.");
-+        } else {
-+            DAWN_INVALID_IF(colorManagement->colorSpace == wgpu::PredefinedColorSpace::Rec2100PQ,
-+                            "SurfaceColorManagement Rec.2100 PQ requires extended tone mapping.");
-+        }
++        DAWN_INVALID_IF(colorManagement->toneMappingMode == wgpu::ToneMappingMode::Extended &&
++                            colorManagement->colorSpace != wgpu::PredefinedColorSpace::SRGBLinear,
++                        "SurfaceColorManagement extended tone mapping requires the sRGB linear "
++                        "color space.");
      }
  
      wgpu::SType type;
@@ -55,7 +50,7 @@ index 8ebe3104cd..96fa18e44a 100644
      switch (type) {
  #if DAWN_PLATFORM_IS(ANDROID)
          case wgpu::SType::SurfaceSourceAndroidNativeWindow: {
-@@ -307,17 +318,27 @@ Surface::Surface(InstanceBase* instance, const UnpackedPtr<SurfaceDescriptor>& d
+@@ -307,17 +313,27 @@ Surface::Surface(InstanceBase* instance, const UnpackedPtr<SurfaceDescriptor>& d
        mInstance(instance),
        mCapabilityCache(std::make_unique<AdapterSurfaceCapCache>()) {
      mLabel = std::string(descriptor->label);
@@ -89,7 +84,7 @@ index 8ebe3104cd..96fa18e44a 100644
              .AcquireSuccess();
      switch (type) {
          case wgpu::SType::SurfaceSourceAndroidNativeWindow: {
-@@ -399,6 +420,10 @@ InstanceBase* Surface::GetInstance() const {
+@@ -399,6 +415,10 @@ InstanceBase* Surface::GetInstance() const {
      return mInstance.Get();
  }
  
@@ -133,6 +128,171 @@ index 450411b4c9..79ebd84a4a 100644
      // MetalLayer
      raw_ptr<void> mMetalLayer = nullptr;
  
+diff --git a/src/dawn/native/d3d/PhysicalDeviceD3D.cpp b/src/dawn/native/d3d/PhysicalDeviceD3D.cpp
+index 9269d90916..91d9303ccd 100644
+--- a/src/dawn/native/d3d/PhysicalDeviceD3D.cpp
++++ b/src/dawn/native/d3d/PhysicalDeviceD3D.cpp
+@@ -31,6 +31,7 @@
+ #include <utility>
+ 
+ #include "src/dawn/common/WindowsUtils.h"
++#include "src/dawn/native/Surface.h"
+ #include "src/dawn/native/d3d/BackendD3D.h"
+ #include "src/utils/numeric.h"
+ 
+@@ -55,7 +56,7 @@ Backend* PhysicalDevice::GetBackend() const {
+ 
+ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapabilities(
+     InstanceBase*,
+-    const Surface*) const {
++    const Surface* surface) const {
+     PhysicalDeviceSurfaceCapabilities capabilities;
+ 
+     // StorageBinding is not supported by DXGI swapchains.
+@@ -71,6 +72,32 @@ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapab
+         wgpu::TextureFormat::RGB10A2Unorm,
+     };
+ 
++    // Dusklight HDR: with SurfaceColorManagement, keep only the format the swapchain would
++    // present in that color space, and require an HDR-capable output. An empty format list
++    // makes the application fall back to SDR.
++    // shortcut: output 0 (primary) only, decided per run; upgrade for multi-monitor HDR.
++    if (const auto colorManagement = surface->GetColorManagement()) {
++        if (colorManagement->colorSpace == wgpu::PredefinedColorSpace::SRGBLinear) {
++            capabilities.formats = {wgpu::TextureFormat::RGBA16Float};
++        } else if (colorManagement->colorSpace == wgpu::PredefinedColorSpace::Rec2100PQ) {
++            capabilities.formats = {wgpu::TextureFormat::RGB10A2Unorm};
++        } else {
++            capabilities.formats.clear();
++        }
++        ComPtr<IDXGIOutput> output;
++        ComPtr<IDXGIOutput6> output6;
++        const bool outputHdrCapable =
++            SUCCEEDED(GetHardwareAdapter()->EnumOutputs(0, &output)) &&
++            SUCCEEDED(output.As(&output6)) && [&] {
++                DXGI_OUTPUT_DESC1 outputDesc;
++                return SUCCEEDED(output6->GetDesc1(&outputDesc)) &&
++                       outputDesc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
++            }();
++        if (!outputHdrCapable) {
++            capabilities.formats.clear();
++        }
++    }
++
+     capabilities.presentModes = {
+         wgpu::PresentMode::Fifo,
+         wgpu::PresentMode::Immediate,
+diff --git a/src/dawn/native/d3d/SwapChainD3D.cpp b/src/dawn/native/d3d/SwapChainD3D.cpp
+index 7b7eb943f2..f61903dded 100644
+--- a/src/dawn/native/d3d/SwapChainD3D.cpp
++++ b/src/dawn/native/d3d/SwapChainD3D.cpp
+@@ -31,6 +31,9 @@
+ #include <windows.ui.xaml.media.dxinterop.h>
+ #endif  // defined(DAWN_USE_WINDOWS_UI)
+ 
++#include <atomic>
++#include <dxgi1_6.h>
++#include <optional>
+ #include <utility>
+ 
+ #include "src/dawn/native/BlitTextureToBuffer.h"
+@@ -39,10 +42,29 @@
+ #include "src/dawn/native/d3d/DeviceD3D.h"
+ #include "src/dawn/native/d3d/Forward.h"
+ #include "src/dawn/native/d3d/UtilsD3D.h"
++#include "src/utils/log.h"
+ 
+ namespace dawn::native::d3d {
+ namespace {
+ 
++// Dusklight HDR: the DXGI color space for a swapchain format under the surface's requested
++// color management (scRGB extended, and fork-only Rec.2100 PQ with standard tone mapping).
++std::optional<DXGI_COLOR_SPACE_TYPE> GetSwapchainDXGIColorSpace(
++    const std::optional<wgpu::SurfaceColorManagement>& colorManagement, DXGI_FORMAT format) {
++    if (!colorManagement) {
++        return std::nullopt;
++    }
++    if (colorManagement->colorSpace == wgpu::PredefinedColorSpace::SRGBLinear &&
++        format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
++        return DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
++    }
++    if (colorManagement->colorSpace == wgpu::PredefinedColorSpace::Rec2100PQ &&
++        format == DXGI_FORMAT_R10G10B10A2_UNORM) {
++        return DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
++    }
++    return std::nullopt;
++}
++
+ uint32_t PresentModeToBufferCount(wgpu::PresentMode mode) {
+     switch (mode) {
+         case wgpu::PresentMode::Immediate:
+@@ -203,6 +225,7 @@ MaybeError SwapChain::Initialize(SwapChainBase* previousSwapChain) {
+         CheckHRESULT(mDXGISwapChain->ResizeBuffers(mConfig.bufferCount, GetWidth(), GetHeight(),
+                                                    mConfig.format, mConfig.swapChainFlags),
+                      "IDXGISwapChain::ResizeBuffer"));
++    DAWN_TRY(ApplySwapchainColorSpace());
+     return CollectSwapChainBuffers();
+ }
+ 
+@@ -285,10 +308,43 @@ MaybeError SwapChain::InitializeSwapChainFromScratch() {
+     }
+ 
+     DAWN_TRY(CheckHRESULT(swapChain1.As(&mDXGISwapChain), "Gettting IDXGISwapChain1"));
++    DAWN_TRY(ApplySwapchainColorSpace());
+ 
+     return CollectSwapChainBuffers();
+ }
+ 
++// Dusklight HDR: declares the swapchain's color space to the OS. An unsupported color space
++// (Windows HDR off, older WARP, ...) keeps the swapchain presenting as SDR instead of
++// failing: surface capabilities already told the application about HDR support.
++MaybeError SwapChain::ApplySwapchainColorSpace() {
++    const auto dxgiColorSpace =
++        GetSwapchainDXGIColorSpace(GetSurface()->GetColorManagement(), mConfig.format);
++    if (!dxgiColorSpace) {
++        return {};
++    }
++    ComPtr<IDXGISwapChain3> swapChain3;
++    if (FAILED(mDXGISwapChain.As(&swapChain3))) {
++        return {};
++    }
++    UINT support = 0;
++    if (FAILED(swapChain3->CheckColorSpaceSupport(*dxgiColorSpace, &support)) || support == 0) {
++        dawn::WarningLog() << "Dawn D3D: swapchain color space " << *dxgiColorSpace
++                        << " unsupported, presenting as SDR";
++        return {};
++    }
++    const HRESULT setColorSpaceResult = swapChain3->SetColorSpace1(*dxgiColorSpace);
++    static std::atomic<bool> sLoggedSetColorSpace{false};
++    if (!sLoggedSetColorSpace.exchange(true)) {
++        if (SUCCEEDED(setColorSpaceResult)) {
++            dawn::InfoLog() << "Dawn D3D: swapchain color space " << *dxgiColorSpace;
++        } else {
++            dawn::WarningLog() << "Dawn D3D: SetColorSpace1(" << *dxgiColorSpace
++                            << ") failed, presenting as SDR";
++        }
++    }
++    return {};
++}
++
+ MaybeError SwapChain::PresentDXGISwapChain() {
+     // Do the actual present. DXGI_STATUS_OCCLUDED is a valid return value that's just a
+     // message to the application that it could stop rendering.
+diff --git a/src/dawn/native/d3d/SwapChainD3D.h b/src/dawn/native/d3d/SwapChainD3D.h
+index 845211eb6c..f38a0a8b88 100644
+--- a/src/dawn/native/d3d/SwapChainD3D.h
++++ b/src/dawn/native/d3d/SwapChainD3D.h
+@@ -77,6 +77,10 @@ class SwapChain : public SwapChainBase {
+     // Does the swapchain initialization steps assuming there is nothing we can reuse.
+     MaybeError InitializeSwapChainFromScratch();
+ 
++    // Dusklight HDR: SetColorSpace1 on the created/resized swapchain from the surface's
++    // SurfaceColorManagement (no-op without one, or when unsupported).
++    MaybeError ApplySwapchainColorSpace();
++
+     Config mConfig;
+     ComPtr<IDXGISwapChain3> mDXGISwapChain;
+ };
 diff --git a/src/dawn/native/vulkan/PhysicalDeviceVk.cpp b/src/dawn/native/vulkan/PhysicalDeviceVk.cpp
 index a91b5352bd..3935161d6a 100644
 --- a/src/dawn/native/vulkan/PhysicalDeviceVk.cpp
