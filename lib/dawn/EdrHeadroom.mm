@@ -6,15 +6,15 @@
 #import <AppKit/AppKit.h>
 #endif
 
-#include "webgpu/hdr.hpp"
+#include "../webgpu/hdr.hpp"
 
 namespace aurora::webgpu {
 
 float aurora_edr_headroom() {
 #if TARGET_OS_IPHONE || TARGET_OS_TV
-  // Live headroom tracks brightness and Low Power Mode on iOS.
-  if (@available(iOS 16.4, tvOS 16.4, *)) {
-    return (float)UIScreen.mainScreen.currentExtendedEDRContentHeadroom.maximumEDRHeadroom;
+  // Live headroom tracks brightness and Low Power Mode on iOS (instance property, iOS 16+).
+  if (@available(iOS 16.0, tvOS 16.0, *)) {
+    return (float)UIScreen.mainScreen.currentEDRHeadroom;
   }
   return 1.f;
 #else

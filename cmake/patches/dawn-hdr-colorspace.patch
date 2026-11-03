@@ -294,7 +294,7 @@ index 845211eb6c..f38a0a8b88 100644
      ComPtr<IDXGISwapChain3> mDXGISwapChain;
  };
 diff --git a/src/dawn/native/metal/PhysicalDeviceMTL.mm b/src/dawn/native/metal/PhysicalDeviceMTL.mm
-index 2d7e99505c..f92615a7b9 100644
+index 2d7e99505c..1c3d99f3cf 100644
 --- a/src/dawn/native/metal/PhysicalDeviceMTL.mm
 +++ b/src/dawn/native/metal/PhysicalDeviceMTL.mm
 @@ -35,6 +35,7 @@
@@ -338,8 +338,8 @@ index 2d7e99505c..f92615a7b9 100644
 +    if (const auto colorManagement = surface->GetColorManagement()) {
 +        const bool edrCapable = []() {
 +#if DAWN_PLATFORM_IS(IOS)
-+            if (@available(iOS 16.4, tvOS 16.4, *)) {
-+                return UIScreen.mainScreen.maximumExtendedEDRHeadroom > 1.0;
++            if (@available(iOS 16.0, tvOS 16.0, *)) {
++                return UIScreen.mainScreen.potentialEDRHeadroom > 1.0;
 +            }
 +            return false;
 +#else
