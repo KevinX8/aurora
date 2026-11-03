@@ -125,6 +125,9 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     endif ()
     set(DAWN_BUILD_SAMPLES OFF CACHE INTERNAL "Disable Dawn sample applications")
     set(DAWN_BUILD_BENCHMARKS OFF CACHE INTERNAL "Disable Dawn benchmarks")
+    # aurora consumes Dawn via headers, never C++20 modules; gcc toolchains (CI runners)
+    # pass Dawn's module compile probe but ship no CMake import scanner, breaking generate.
+    set(DAWN_SUPPORTS_CXX_MODULES OFF CACHE INTERNAL "aurora uses headers, not modules")
     set(DAWN_SUPPORTS_GLFW_FOR_WINDOWING OFF CACHE INTERNAL "Disable Dawn GLFW windowing")
     set(DAWN_FETCH_DEPENDENCIES ON CACHE INTERNAL
       "Use fetch_dawn_dependencies.py as an alternative to using depot_tools")
