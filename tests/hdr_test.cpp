@@ -98,10 +98,24 @@ TEST(HdrMode, OffStaysOff) {
   EXPECT_EQ(resolve_mode(AURORA_HDR_OFF, f), AURORA_HDR_OFF);
 }
 
-TEST(HdrMode, EnvNames) {
-  EXPECT_STREQ(colorspace_env(AURORA_HDR_HDR10), "hdr10");
-  EXPECT_STREQ(colorspace_env(AURORA_HDR_SCRGB), "scrgb");
-  EXPECT_EQ(colorspace_env(AURORA_HDR_OFF), nullptr);
+TEST(HdrMode, ColorManagement) {
+  EXPECT_FALSE(color_management(AURORA_HDR_OFF).has_value());
+  const auto scrgb = color_management(AURORA_HDR_SCRGB);
+  EXPECT_EQ(scrgb->colorSpace, wgpu::PredefinedColorSpace::SRGBLinear);
+  EXPECT_EQ(scrgb->toneMappingMode, wgpu::ToneMappingMode::Extended);
+  const auto hdr10 = color_management(AURORA_HDR_HDR10);
+  EXPECT_EQ(hdr10->colorSpace, wgpu::PredefinedColorSpace::Rec2100PQ);
+  EXPECT_EQ(hdr10->toneMappingMode, wgpu::ToneMappingMode::Standard);
+}
+
+TEST(HdrMode, Backends) {
+  EXPECT_TRUE(hdr_backend_supported(wgpu::BackendType::Vulkan));
+  EXPECT_TRUE(hdr_backend_supported(wgpu::BackendType::D3D12));
+  EXPECT_TRUE(hdr_backend_supported(wgpu::BackendType::Metal));
+  EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::D3D11));
+  EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::OpenGL));
+  EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::OpenGLES));
+  EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::Null));
 }
 
 TEST(HdrPq, Endpoints) {

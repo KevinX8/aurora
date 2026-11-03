@@ -318,16 +318,6 @@ uint32_t viewport_extent(float value) noexcept {
   return std::max(1u, static_cast<uint32_t>(std::lround(std::max(value, 1.f))));
 }
 
-void set_colorspace_env(AuroraHdrMode mode) {
-#ifndef _WIN32
-  if (const char* value = hdr::colorspace_env(mode)) {
-    setenv("DAWN_VK_SWAPCHAIN_COLORSPACE", value, 1);
-  }
-#else
-  (void)mode;
-#endif
-}
-
 } // namespace
 
 bool vsync_enabled() noexcept { return g_vsyncEnabled.load(std::memory_order_acquire); }
@@ -1049,7 +1039,7 @@ static bool create_surface() {
   }
   window::SurfaceLock surfaceLock;
   release_surface_locked();
-  g_surface = create_window_surface(g_instance, window, "Surface");
+  g_surface = create_window_surface(g_instance, window, "Surface", g_config.hdrMode);
   if (!g_surface) {
     Log.error("Failed to create surface");
     return false;
@@ -1086,8 +1076,6 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
 #endif
     instanceDescriptor.nextInChain = &dawnInstanceDescriptor;
 #endif
-    set_colorspace_env(to_wgpu_backend(auroraBackend) == wgpu::BackendType::Vulkan ? g_config.hdrMode
-                                                                                   : AURORA_HDR_OFF);
     g_instance = wgpu::CreateInstance(&instanceDescriptor);
     if (!g_instance) {
       Log.error("Failed to create WebGPU instance");
@@ -1350,8 +1338,8 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
     return false;
   }
   const std::span offeredFormats{g_surfaceCapabilities.formats, g_surfaceCapabilities.formatCount};
-  if (g_config.hdrMode != AURORA_HDR_OFF && g_backendType != wgpu::BackendType::Vulkan) {
-    Log.warn("HDR mode {} requires the Vulkan backend, active backend is {}; using SDR",
+  if (g_config.hdrMode != AURORA_HDR_OFF && !hdr::hdr_backend_supported(g_backendType)) {
+    Log.warn("HDR mode {} is not supported on the {} backend; using SDR",
              magic_enum::enum_name(g_config.hdrMode), magic_enum::enum_name(g_backendType));
   } else {
     g_hdrMode = hdr::resolve_mode(g_config.hdrMode, offeredFormats);

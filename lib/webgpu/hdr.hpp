@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <span>
 
 namespace aurora::webgpu::hdr {
@@ -41,15 +42,28 @@ inline AuroraHdrMode resolve_mode(AuroraHdrMode requested, std::span<const wgpu:
   return AURORA_HDR_OFF;
 }
 
-inline const char* colorspace_env(AuroraHdrMode mode) {
+inline std::optional<wgpu::SurfaceColorManagement> color_management(AuroraHdrMode mode) {
   switch (mode) {
   case AURORA_HDR_HDR10:
-    return "hdr10";
+    return wgpu::SurfaceColorManagement{wgpu::SurfaceColorManagement::Init{
+        .nextInChain = nullptr,
+        .colorSpace = wgpu::PredefinedColorSpace::Rec2100PQ,
+        .toneMappingMode = wgpu::ToneMappingMode::Standard,
+    }};
   case AURORA_HDR_SCRGB:
-    return "scrgb";
+    return wgpu::SurfaceColorManagement{wgpu::SurfaceColorManagement::Init{
+        .nextInChain = nullptr,
+        .colorSpace = wgpu::PredefinedColorSpace::SRGBLinear,
+        .toneMappingMode = wgpu::ToneMappingMode::Extended,
+    }};
   default:
-    return nullptr;
+    return std::nullopt;
   }
+}
+
+inline bool hdr_backend_supported(wgpu::BackendType backend) noexcept {
+  return backend == wgpu::BackendType::Vulkan || backend == wgpu::BackendType::D3D12 ||
+         backend == wgpu::BackendType::Metal;
 }
 
 // nits in, ST 2084 code value out
