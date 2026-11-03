@@ -294,7 +294,7 @@ index 845211eb6c..f38a0a8b88 100644
      ComPtr<IDXGISwapChain3> mDXGISwapChain;
  };
 diff --git a/src/dawn/native/metal/PhysicalDeviceMTL.mm b/src/dawn/native/metal/PhysicalDeviceMTL.mm
-index 2d7e99505c..ca582da5ca 100644
+index 2d7e99505c..f92615a7b9 100644
 --- a/src/dawn/native/metal/PhysicalDeviceMTL.mm
 +++ b/src/dawn/native/metal/PhysicalDeviceMTL.mm
 @@ -35,6 +35,7 @@
@@ -328,7 +328,7 @@ index 2d7e99505c..ca582da5ca 100644
      PhysicalDeviceSurfaceCapabilities capabilities;
  
      capabilities.usages = wgpu::TextureUsage::RenderAttachment |
-@@ -362,6 +370,32 @@ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapab
+@@ -362,6 +370,31 @@ ResultOrError<PhysicalDeviceSurfaceCapabilities> PhysicalDevice::GetSurfaceCapab
      capabilities.formats.push_back(wgpu::TextureFormat::RGB10A2Unorm);
  #endif  // DAWN_PLATFORM_IS(MACOS)
  
@@ -339,8 +339,7 @@ index 2d7e99505c..ca582da5ca 100644
 +        const bool edrCapable = []() {
 +#if DAWN_PLATFORM_IS(IOS)
 +            if (@available(iOS 16.4, tvOS 16.4, *)) {
-+                return UIScreen.mainScreen.maximumExtendedEDRContentHeadroom
-+                           .maximumExtendedDynamicRangeColorComponentValue > 1.0;
++                return UIScreen.mainScreen.maximumExtendedEDRHeadroom > 1.0;
 +            }
 +            return false;
 +#else

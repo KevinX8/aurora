@@ -14,7 +14,7 @@ float aurora_edr_headroom() {
 #if TARGET_OS_IPHONE || TARGET_OS_TV
   // Live headroom tracks brightness and Low Power Mode on iOS.
   if (@available(iOS 16.4, tvOS 16.4, *)) {
-    return (float)UIScreen.mainScreen.currentEDRHeadroom.maximumEDRHeadroom;
+    return (float)UIScreen.mainScreen.currentExtendedEDRContentHeadroom.maximumEDRHeadroom;
   }
   return 1.f;
 #else
