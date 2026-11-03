@@ -87,8 +87,15 @@ endif ()
 # ── Auto: resolve provider based on platform availability ──
 set(_aurora_dawn_provider "${AURORA_DAWN_PROVIDER}")
 if (_aurora_dawn_provider STREQUAL "auto")
-  # Prebuilt Dawn packages available for: windows-{amd64,arm64}, linux-{x86_64,aarch64}, darwin-{arm64,x86_64}, ios-arm64, android-aarch64
-  if (_has_dawn_package)
+  # The HDR color-management patches (cmake/patches/dawn-*.patch) apply to the vendored
+  # Dawn source only: prebuilt packages and system Dawn lack SurfaceColorManagement and
+  # the Rec2100PQ enum, which would silently degrade HDR. With patches present, auto picks vendor.
+  file(GLOB _aurora_dawn_hdr_patches CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/patches/dawn-*.patch")
+  if (_aurora_dawn_hdr_patches)
+    set(_aurora_dawn_provider "vendor")
+  elseif (_has_dawn_package)
+    # Prebuilt Dawn packages available for: windows-{amd64,arm64}, linux-{x86_64,aarch64}, darwin-{arm64,x86_64}, ios-arm64, android-aarch64
     set(_aurora_dawn_provider "package")
   else ()
     set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
