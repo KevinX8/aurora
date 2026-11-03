@@ -361,10 +361,18 @@ index 2d7e99505c..f92615a7b9 100644
          wgpu::PresentMode::Fifo,
          wgpu::PresentMode::Immediate,
 diff --git a/src/dawn/native/metal/SwapChainMTL.mm b/src/dawn/native/metal/SwapChainMTL.mm
-index b9a9d07b3a..061dc058ac 100644
+index b9a9d07b3a..bfc0250322 100644
 --- a/src/dawn/native/metal/SwapChainMTL.mm
 +++ b/src/dawn/native/metal/SwapChainMTL.mm
-@@ -79,6 +79,19 @@ MaybeError SwapChain::Initialize(SwapChainBase* previousSwapChain) {
+@@ -28,6 +28,7 @@
+ #include "src/dawn/native/metal/SwapChainMTL.h"
+ 
+ #import <QuartzCore/CAMetalLayer.h>
++#import <CoreGraphics/CoreGraphics.h>
+ 
+ #include "src/dawn/native/ChainUtils.h"
+ #include "src/dawn/native/Surface.h"
+@@ -79,6 +80,18 @@ MaybeError SwapChain::Initialize(SwapChainBase* previousSwapChain) {
      [*mLayer setDevice:ToBackend(GetDevice())->GetMTLDevice()];
      [*mLayer setPixelFormat:MetalPixelFormat(GetDevice(), GetFormat())];
  
@@ -373,12 +381,11 @@ index b9a9d07b3a..061dc058ac 100644
 +    // its values relative to that, clamped to the screen's current headroom.
 +    if (const auto colorManagement = GetSurface()->GetColorManagement();
 +        colorManagement && colorManagement->colorSpace == wgpu::PredefinedColorSpace::SRGBLinear) {
-+        mLayer.wantsExtendedDynamicRangeContent = YES;
-+#if DAWN_PLATFORM_IS(MACOS)
-+        mLayer.colorspace = NSColorSpace.extendedLinearSRGBColorSpace.CGColorSpace;
-+#else
-+        mLayer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
-+#endif
++        CAMetalLayer* layer = *mLayer;
++        layer.wantsExtendedDynamicRangeContent = YES;
++        CGColorSpaceRef extendedLinear = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
++        layer.colorspace = extendedLinear;
++        CGColorSpaceRelease(extendedLinear);
 +    }
 +
      // TODO(dawn:2320): Check that this behaves as expected by the spec
