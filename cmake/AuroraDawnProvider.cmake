@@ -116,6 +116,12 @@ if (_aurora_dawn_provider STREQUAL "vendor")
   if (NOT TARGET webgpu_dawn)
     message(STATUS "aurora: Fetching Dawn (provider=vendor, linkage=${AURORA_DAWN_LINKAGE})")
 
+    if (MSVC AND AURORA_DAWN_LINKAGE STREQUAL "shared")
+      # A shared monolithic webgpu_dawn exceeds link.exe's 65535-object DLL limit
+      # (LNK1189): every Dawn+tint+abseil object lands in one link. Static is fine.
+      message(STATUS "aurora: vendor linkage shared -> static (MSVC LNK1189 object limit)")
+      set(AURORA_DAWN_LINKAGE static)
+    endif ()
     if (AURORA_DAWN_LINKAGE STREQUAL "shared")
       set(DAWN_BUILD_MONOLITHIC_LIBRARY SHARED CACHE INTERNAL
         "Bundle all dawn components into a single shared library.")

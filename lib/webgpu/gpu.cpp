@@ -1342,7 +1342,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
   if (status == wgpu::Status::Success && g_surfaceCapabilities.formatCount == 0 &&
       g_config.hdrMode != AURORA_HDR_OFF) {
     Log.warn("HDR mode {} is not offered by the display; using SDR",
-             magic_enum::enum_name(g_config.hdrMode));
+             hdr::mode_name(g_config.hdrMode));
     g_config.hdrMode = AURORA_HDR_OFF;
     {
       window::SurfaceLock surfaceLock;
@@ -1368,7 +1368,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
   const std::span offeredFormats{g_surfaceCapabilities.formats, g_surfaceCapabilities.formatCount};
   if (g_config.hdrMode != AURORA_HDR_OFF && !hdr::hdr_backend_supported(g_backendType)) {
     Log.warn("HDR mode {} is not supported on the {} backend; using SDR",
-             magic_enum::enum_name(g_config.hdrMode), magic_enum::enum_name(g_backendType));
+             hdr::mode_name(g_config.hdrMode), magic_enum::enum_name(g_backendType));
   } else {
     g_hdrMode = hdr::resolve_mode(g_config.hdrMode, offeredFormats, g_backendType);
     if (g_hdrMode != g_config.hdrMode) {
@@ -1378,7 +1378,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
         formatList += magic_enum::enum_name(format);
       }
       Log.warn("HDR mode {} unavailable, falling back to SDR. Offered formats:{}",
-               magic_enum::enum_name(g_config.hdrMode), formatList);
+               hdr::mode_name(g_config.hdrMode), formatList);
     }
   }
   wgpu::TextureFormat surfaceFormat;

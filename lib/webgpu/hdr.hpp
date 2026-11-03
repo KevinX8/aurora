@@ -66,6 +66,19 @@ inline std::optional<wgpu::SurfaceColorManagement> color_management(AuroraHdrMod
   }
 }
 
+// magic_enum reflection over the C enum AuroraHdrMode breaks on NDK clang
+// (unsigned-int underlying type trips its range probe); a 3-value switch is exact.
+inline const char* mode_name(AuroraHdrMode mode) noexcept {
+  switch (mode) {
+  case AURORA_HDR_HDR10:
+    return "HDR10";
+  case AURORA_HDR_SCRGB:
+    return "scRGB";
+  default:
+    return "off";
+  }
+}
+
 inline bool hdr_backend_supported(wgpu::BackendType backend) noexcept {
   return backend == wgpu::BackendType::Vulkan || backend == wgpu::BackendType::D3D12 ||
          backend == wgpu::BackendType::Metal;
