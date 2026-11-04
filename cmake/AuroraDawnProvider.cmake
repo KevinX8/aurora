@@ -118,6 +118,12 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     endif ()
     set(DAWN_BUILD_SAMPLES OFF CACHE INTERNAL "Disable Dawn sample applications")
     set(DAWN_BUILD_BENCHMARKS OFF CACHE INTERNAL "Disable Dawn benchmarks")
+    # Cross toolchains (iOS/Android) cannot host-build protoc; aurora needs neither the wire
+    # nor tint's protobuf IR format.
+    set(DAWN_BUILD_PROTOBUF OFF CACHE INTERNAL "")
+    set(TINT_BUILD_IR_BINARY OFF CACHE INTERNAL "")
+    # GCC passes Dawn's C++ modules probe but has no CMake module scanner.
+    set(DAWN_SUPPORTS_CXX_MODULES OFF CACHE INTERNAL "")
     set(DAWN_SUPPORTS_GLFW_FOR_WINDOWING OFF CACHE INTERNAL "Disable Dawn GLFW windowing")
     set(DAWN_FETCH_DEPENDENCIES ON CACHE INTERNAL
       "Use fetch_dawn_dependencies.py as an alternative to using depot_tools")
@@ -141,6 +147,11 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     FetchContent_MakeAvailable(dawn)
     if (NOT TARGET webgpu_dawn)
       message(FATAL_ERROR "Failed to make dawn available")
+    endif ()
+    if (WIN32 AND AURORA_DAWN_LINKAGE STREQUAL "shared")
+      # A parent CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS would export every Dawn/tint/absl symbol
+      # and hit link.exe's 65535-export limit (LNK1189); Dawn has its own dllexport macros.
+      set_target_properties(webgpu_dawn PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
     endif ()
   else ()
     message(STATUS "aurora: Using existing Dawn")
