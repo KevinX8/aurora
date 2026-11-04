@@ -802,7 +802,7 @@ std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& 
     return fmt::format("\n    {0}{2} = {1}{2};", outVar, matSrc, swizzle);
   }
   // HDR: TEV keeps hardware clamps; how far the lighting exceeds 1 is applied to the TEV output.
-  // shortcut: per-vertex lighting only (UsePerPixelLighting is off); per-pixel would need a local gain var.
+  // Per-vertex lighting only, like UsePerPixelLighting today; per-pixel would need a local gain.
   const std::string gainLine = config.unclipLighting && !alpha && !UsePerPixelLighting
                                    ? fmt::format("\n      out.gain{} = max(lighting.rgb, vec3f(1.0));", i)
                                    : std::string{};
@@ -878,12 +878,12 @@ std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view sca
   return clamp ? fmt::format("clamp({}, 0.0, 1.0)", expr) : fmt::format("clamp({}, -4.0, 4.0)", expr);
 }
 
-std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode,
-                                uint32_t normalAttachment, uint32_t hdrGainAttachment,
-                                uint32_t hdrGlowAttachment) noexcept {
+std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode, uint32_t normalAttachment,
+                                uint32_t hdrGainAttachment, uint32_t hdrGlowAttachment) noexcept {
   ZoneScoped;
-  const auto hash = xxh3_hash(
-      dstAlphaMode, xxh3_hash(hdrGlowAttachment, xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
+  const auto hash =
+      xxh3_hash(dstAlphaMode, xxh3_hash(hdrGlowAttachment,
+                                        xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
   const auto info = build_shader_info(config);
   if (EnableDebugPrints && !s_seenShaders.contains(hash)) {
     s_seenShaders.insert(hash);
@@ -1117,9 +1117,8 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
       };
       std::string_view outReg = regName[stage.alphaOp.outReg];
       std::string op = tev_alpha_op(stage.alphaOp.op, tev_bias(stage.alphaOp.bias), tev_scale(stage.alphaOp.scale),
-                                    stage.alphaOp.clamp, alpha_arg(stage.alphaPass.a),
-                                    alpha_arg(stage.alphaPass.b), alpha_arg(stage.alphaPass.c),
-                                    alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
+                                    stage.alphaOp.clamp, alpha_arg(stage.alphaPass.a), alpha_arg(stage.alphaPass.b),
+                                    alpha_arg(stage.alphaPass.c), alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
       fragmentFn += fmt::format("\n    {0}.a = {1};", outReg, op);
       alphaNormalized[stage.alphaOp.outReg] = stage.alphaOp.clamp;
     }
@@ -1686,9 +1685,10 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
     fragmentOutputType = "FragmentOutput"sv;
     fragmentReturn = "\n    var out: FragmentOutput;\n    out.color = prev;";
     if (hdrSide) {
-      fragmentReturn += fmt::format("\n    out.hdr_gain = vec4f({}, hdr_src.a);"
-                                    "\n    out.hdr_glow = vec4f({}, hdr_src.a);",
-                                    hdrGainExpr, hdrLit ? "vec3f(0.0)" : "hdr_src.rgb");
+      fragmentReturn += fmt::format(
+          "\n    out.hdr_gain = vec4f({}, hdr_src.a);"
+          "\n    out.hdr_glow = vec4f({}, hdr_src.a);",
+          hdrGainExpr, hdrLit ? "vec3f(0.0)" : "hdr_src.rgb");
     }
   }
   if (normalAttachment != UINT32_MAX) {
@@ -2119,8 +2119,9 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config, const gfx::RenderTar
   }
   const auto shaderSource =
       build_shader_source(config, dstAlphaMode, normalAttachment, hdrGainAttachment, hdrGlowAttachment);
-  const auto hash = xxh3_hash(
-      dstAlphaMode, xxh3_hash(hdrGlowAttachment, xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
+  const auto hash =
+      xxh3_hash(dstAlphaMode, xxh3_hash(hdrGlowAttachment,
+                                        xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
   wgpu::ShaderSourceWGSL wgslDescriptor{};
   wgslDescriptor.code = shaderSource.c_str();
   const auto label = fmt::format("GX Shader {:x}", hash);

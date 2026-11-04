@@ -880,7 +880,8 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
     color.loadOp = wgpu::LoadOp::Undefined;
     if (color.semantic == ColorAttachmentSemantic::Normal && clearDepth && fullTarget) {
       color.clear = true;
-    } else if ((color.semantic == ColorAttachmentSemantic::HdrGain || color.semantic == ColorAttachmentSemantic::HdrGlow) &&
+    } else if ((color.semantic == ColorAttachmentSemantic::HdrGain ||
+                color.semantic == ColorAttachmentSemantic::HdrGlow) &&
                fullColorClear) {
       color.clear = true; // follows the scene color it annotates
     } else {

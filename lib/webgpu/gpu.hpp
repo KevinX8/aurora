@@ -87,10 +87,11 @@ Viewport calculate_present_viewport(uint32_t surface_width, uint32_t surface_hei
 const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport);
 const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport,
                                                   const TextureWithSampler& source);
-// The frame to present in HDR: a mod's scene texture override, else the game frame.
+// Wraps (and references) a frame's non-null scene texture override for presentation.
 TextureWithSampler hdr_scene_source(const AuroraHdrFrame& frame);
+// Encodes sceneSource, or the game frame when it is empty, into the HDR surface.
 void hdr_encode(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& target, const Viewport& viewport,
-                const AuroraHdrFrame& frame);
+                const AuroraHdrFrame& frame, const TextureWithSampler& sceneSource);
 void draw_clear(const wgpu::RenderPassEncoder& pass, bool clearColor, bool clearAlpha, bool clearDepth,
                 const Vec4<float>& clearColorValue, float clearDepthValue);
 

@@ -51,8 +51,8 @@ std::shared_ptr<wgpu::ChainedStruct> SetupWindowAndGetSurfaceDescriptor(SDL_Wind
 
 } // namespace utils
 
-wgpu::Surface create_window_surface(const wgpu::Instance& instance, SDL_Window* window,
-                                   const char* label, AuroraHdrMode hdrMode) {
+wgpu::Surface create_window_surface(const wgpu::Instance& instance, SDL_Window* window, const char* label,
+                                    AuroraHdrMode hdrMode) {
   if (!instance || window == nullptr) {
     return nullptr;
   }

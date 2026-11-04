@@ -63,9 +63,11 @@ void set_present_viewport(const wgpu::RenderPassEncoder& pass, const gfx::Viewpo
   pass.SetScissorRect(scissorX, scissorY, scissorRight - scissorX, scissorBottom - scissorY);
 }
 
-void present_hdr(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& view,
-                 const webgpu::Viewport& viewport, const wgpu::BindGroup& rmlBindGroup,
-                 const imgui::DrawData& imguiDrawData, const AuroraHdrFrame& frame) {
+void present_hdr(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& view, const webgpu::Viewport& viewport,
+                 const wgpu::BindGroup& rmlBindGroup, const imgui::DrawData& imguiDrawData, const AuroraHdrFrame& frame,
+                 const webgpu::TextureWithSampler& sceneSource) {
+  // UI goes to a float overlay composited by the encode. Unlike SDR, a backdrop RmlUi frame needs no
+  // special case: its float target already holds the HDR scene behind the menu.
   const auto surfaceWidth = webgpu::g_graphicsConfig.surfaceConfiguration.width;
   const auto surfaceHeight = webgpu::g_graphicsConfig.surfaceConfiguration.height;
   {
@@ -110,7 +112,7 @@ void present_hdr(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& v
     imgui::render(pass, imguiDrawData);
     pass.End();
   }
-  webgpu::hdr_encode(encoder, view, viewport, frame);
+  webgpu::hdr_encode(encoder, view, viewport, frame, sceneSource);
 }
 #endif
 
@@ -329,7 +331,11 @@ void end_frame() noexcept {
   auto imguiDrawData = imgui::freeze();
   const auto hdrFrame = webgpu::hdr::g_frameState.pending;
 
-  const auto presentSource = webgpu::hdr_scene_source(hdrFrame);
+  // A mod's scene texture is referenced here, on the main thread, so the render worker never
+  // touches the borrowed handle after the mod's frame ends.
+  const auto sceneSource =
+      hdrFrame.sceneTexture != nullptr ? webgpu::hdr_scene_source(hdrFrame) : webgpu::TextureWithSampler{};
+  const auto& presentSource = sceneSource.texture ? sceneSource : webgpu::present_source();
   const auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
                                                            webgpu::g_graphicsConfig.surfaceConfiguration.height,
                                                            presentSource.size.width, presentSource.size.height);
@@ -345,7 +351,7 @@ void end_frame() noexcept {
 #endif
 
   gfx::end_frame([rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport,
-                  imguiDrawData = std::move(imguiDrawData), hdrFrame](
+                  imguiDrawData = std::move(imguiDrawData), hdrFrame, sceneSource](
                      wgpu::CommandEncoder& encoder, std::vector<gfx::AfterSubmitCallback> afterSubmitCallbacks) {
     wgpu::Texture currentTexture;
     wgpu::TextureView currentView;
@@ -366,7 +372,7 @@ void end_frame() noexcept {
 
     const bool canPresent = currentTexture && currentView;
     if (canPresent && webgpu::g_hdrMode != AURORA_HDR_OFF) {
-      present_hdr(encoder, currentView, viewport, rmlBindGroup, imguiDrawData, hdrFrame);
+      present_hdr(encoder, currentView, viewport, rmlBindGroup, imguiDrawData, hdrFrame, sceneSource);
     } else if (canPresent) {
       wgpu::BindGroup presentBindGroup;
       if (rmlBindGroup && !rmlOverlay) {

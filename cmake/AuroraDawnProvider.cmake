@@ -86,12 +86,10 @@ endif ()
 
 # ── Auto: resolve provider based on platform availability ──
 set(_aurora_dawn_provider "${AURORA_DAWN_PROVIDER}")
+file(GLOB _aurora_dawn_hdr_patches CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/patches/dawn-*.patch")
+list(SORT _aurora_dawn_hdr_patches)
 if (_aurora_dawn_provider STREQUAL "auto")
-  # The HDR color-management patches (cmake/patches/dawn-*.patch) apply to the vendored
-  # Dawn source only: prebuilt packages and system Dawn lack SurfaceColorManagement and
-  # the Rec2100PQ enum, which would silently degrade HDR. With patches present, auto picks vendor.
-  file(GLOB _aurora_dawn_hdr_patches CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_LIST_DIR}/patches/dawn-*.patch")
+  # HDR needs the Dawn patches in cmake/patches, which only the vendored source carries.
   if (_aurora_dawn_hdr_patches)
     set(_aurora_dawn_provider "vendor")
   elseif (_has_dawn_package)
@@ -125,15 +123,12 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     endif ()
     set(DAWN_BUILD_SAMPLES OFF CACHE INTERNAL "Disable Dawn sample applications")
     set(DAWN_BUILD_BENCHMARKS OFF CACHE INTERNAL "Disable Dawn benchmarks")
-    # wire/protobuf is dead weight for the in-process webgpu_dawn aurora links; the
-    # cross toolchains (iOS/Android) cannot host-build protoc and fail configure.
-    # tint's IR binary cache format requires protobuf; Dawn falls back to spirv-cross
-    # serialization, so turn the pair off together.
-    set(DAWN_BUILD_PROTOBUF OFF CACHE INTERNAL "aurora uses webgpu_dawn in process, no wire")
-    set(TINT_BUILD_IR_BINARY OFF CACHE INTERNAL "needs protobuf; Dawn uses spirv-cross serialization")
-    # aurora consumes Dawn via headers, never C++20 modules; gcc toolchains (CI runners)
-    # pass Dawn's module compile probe but ship no CMake import scanner, breaking generate.
-    set(DAWN_SUPPORTS_CXX_MODULES OFF CACHE INTERNAL "aurora uses headers, not modules")
+    # Cross toolchains (iOS/Android) cannot host-build protoc; aurora needs neither the wire
+    # nor tint's protobuf IR format.
+    set(DAWN_BUILD_PROTOBUF OFF CACHE INTERNAL "")
+    set(TINT_BUILD_IR_BINARY OFF CACHE INTERNAL "")
+    # GCC passes Dawn's C++ modules probe but has no CMake module scanner.
+    set(DAWN_SUPPORTS_CXX_MODULES OFF CACHE INTERNAL "")
     set(DAWN_SUPPORTS_GLFW_FOR_WINDOWING OFF CACHE INTERNAL "Disable Dawn GLFW windowing")
     set(DAWN_FETCH_DEPENDENCIES ON CACHE INTERNAL
       "Use fetch_dawn_dependencies.py as an alternative to using depot_tools")
@@ -148,20 +143,15 @@ if (_aurora_dawn_provider STREQUAL "vendor")
       set(ABSL_MSVC_STATIC_RUNTIME ON CACHE INTERNAL "Link static runtime libraries")
     endif ()
 
-    # Vendored Dawn carries the HDR patches from cmake/patches (SurfaceColorManagement on
-    # Vulkan/D3D12/Metal + the Rec2100PQ enum), written against the AURORA_DAWN_REF revision.
+    # HDR patches (SurfaceColorManagement on Vulkan/D3D12/Metal), against AURORA_DAWN_REF.
+    # FetchContent applies them only when it populates the source: wipe _deps/dawn-src after editing one.
     find_package(Git QUIET)
-    file(GLOB _aurora_dawn_hdr_patches CONFIGURE_DEPENDS
-      "${CMAKE_CURRENT_LIST_DIR}/patches/dawn-*.patch")
-    list(SORT _aurora_dawn_hdr_patches)
     set(_aurora_dawn_patch_command "")
     if (_aurora_dawn_hdr_patches)
       if (NOT GIT_FOUND)
         message(FATAL_ERROR "aurora: git is required to apply Dawn HDR patches for provider=vendor")
       endif ()
-      # GIT_DIR= detaches git from any enclosing repository: inside a build tree,
-      # plain "git apply" anchors paths to the outer repo root and silently skips
-      # every hunk as out-of-repo.
+      # GIT_DIR= stops git apply from anchoring to an enclosing repo and skipping every hunk.
       set(_aurora_dawn_patch_command "${CMAKE_COMMAND}" -E env "GIT_DIR="
         "${GIT_EXECUTABLE}" apply --ignore-whitespace ${_aurora_dawn_hdr_patches})
     endif ()
@@ -178,10 +168,8 @@ if (_aurora_dawn_provider STREQUAL "vendor")
       message(FATAL_ERROR "Failed to make dawn available")
     endif ()
     if (WIN32 AND AURORA_DAWN_LINKAGE STREQUAL "shared")
-      # dusklight sets CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS globally (mod binaries need it);
-      # applied to Dawn's DLL it exports every dawn::native/tint/absl symbol and
-      # link.exe hits the 65535-export limit (LNK1189). Dawn exports its C API via
-      # its own dllexport macros - keep that precise set.
+      # A parent CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS would export every Dawn/tint/absl symbol
+      # and hit link.exe's 65535-export limit (LNK1189); Dawn has its own dllexport macros.
       set_target_properties(webgpu_dawn PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
     endif ()
   else ()

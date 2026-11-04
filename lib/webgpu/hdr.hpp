@@ -29,14 +29,9 @@ inline wgpu::TextureFormat required_format(AuroraHdrMode mode) {
   }
 }
 
-inline AuroraHdrMode resolve_mode(AuroraHdrMode requested, std::span<const wgpu::TextureFormat> offered,
-                                  wgpu::BackendType backend) {
+inline AuroraHdrMode resolve_mode(AuroraHdrMode requested, std::span<const wgpu::TextureFormat> offered) {
   if (requested == AURORA_HDR_OFF) {
     return AURORA_HDR_OFF;
-  }
-  // WebGPU has no HDR10 path on Metal: serve scRGB EDR instead of dropping to SDR.
-  if (requested == AURORA_HDR_HDR10 && backend == wgpu::BackendType::Metal) {
-    return AURORA_HDR_SCRGB;
   }
   const auto required = required_format(requested);
   for (const auto format : offered) {
@@ -66,8 +61,7 @@ inline std::optional<wgpu::SurfaceColorManagement> color_management(AuroraHdrMod
   }
 }
 
-// magic_enum reflection over the C enum AuroraHdrMode breaks on NDK clang
-// (unsigned-int underlying type trips its range probe); a 3-value switch is exact.
+// Not magic_enum::enum_name: its range probe fails to compile for this C enum on Android NDK clang.
 inline const char* mode_name(AuroraHdrMode mode) noexcept {
   switch (mode) {
   case AURORA_HDR_HDR10:
@@ -85,32 +79,14 @@ inline bool hdr_backend_supported(wgpu::BackendType backend) noexcept {
 }
 
 // nits in, ST 2084 code value out
-// Apple EDR interprets 1.0 as the OS SDR white (paper white) and offers `headroom` times that.
-// scRGB (1.0 = 80 nits) -> EDR, clamped to the screen's current headroom.
-inline float edr_output(float scrgb, float paperWhiteNits, float headroom) {
-  const float scale = (paperWhiteNits > 0.f && headroom > 1.f) ? 80.f / paperWhiteNits : 1.f;
-  const float cap = std::max(headroom, 1.f);
-  return std::min(scrgb * scale, cap);
-}
-
+// CPU reference for the shader's PQ encode, pinning the shared PQ_* constants.
 inline float pq_encode(float nits) {
   const double y = std::pow(std::max<double>(nits, 0.0) / 10000.0, PQ_M1);
   return static_cast<float>(std::pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), PQ_M2));
 }
 
-inline float pq_decode(float pq) {
-  const double ep = std::pow(std::max<double>(pq, 0.0), 1.0 / PQ_M2);
-  const double num = std::max(ep - PQ_C1, 0.0);
-  const double den = PQ_C2 - PQ_C3 * ep;
-  return static_cast<float>(std::pow(num / den, 1.0 / PQ_M1) * 10000.0);
-}
-
-inline float fallback_nits(float gammaValue, float paperWhiteNits) {
-  return std::copysign(std::pow(std::abs(gammaValue), 2.2f), gammaValue) * paperWhiteNits;
-}
-
-inline float sanitize(float value) { return std::isfinite(value) ? value : 0.f; }
-
+// pending collects this frame's aurora_set_hdr_frame (reset each begin_frame); shader generation
+// reads the previous frame's value so every draw in a frame agrees on unclipLighting.
 struct FrameState {
   AuroraHdrFrame pending{};
   AuroraHdrFrame unclip{};
@@ -133,10 +109,10 @@ inline const AuroraHdrFrame& active_unclip() { return g_frameState.unclip; }
 
 namespace aurora::webgpu {
 // Main screen's extended-range headroom (max value / SDR white): live on iOS, static max on
-// macOS. shortcut: main screen, single window; upgrade for multi-monitor windows.
+// macOS. Uses the main screen, so a window on a secondary display reads the wrong headroom.
 #if defined(__APPLE__)
-float aurora_edr_headroom();
+float edr_headroom();
 #else
-inline float aurora_edr_headroom() { return 1.f; }
+inline float edr_headroom() { return 1.f; }
 #endif
 } // namespace aurora::webgpu

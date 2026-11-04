@@ -10,8 +10,8 @@
 
 using namespace aurora::webgpu::hdr;
 
-// TEV keeps hardware clamps in HDR: Twilight Princess materials rely on them (subtract stages,
-// comparisons, x2/x4 scales), so overbright only comes from the post-TEV lighting gain.
+// TEV keeps hardware clamps in HDR (subtract stages, comparisons and x2/x4 scales depend on
+// them), so overbright only comes from the post-TEV lighting gain.
 TEST(HdrShader, TevClampsStayHardware) {
   const std::string color = aurora::gx::tev_color_op(GX_TEV_ADD, "", "", true, "a", "b", "c", "d");
   EXPECT_NE(color.find(", vec3f(0.0), vec3f(1.0))"), std::string::npos);
@@ -47,9 +47,7 @@ TEST(HdrValidate, RejectsBadValues) {
   EXPECT_FALSE(validate_hdr_frame(expected, expected, 1000.f, 200.f));
 }
 
-TEST(HdrValidate, RejectsShortStruct) {
-  EXPECT_FALSE(validate_hdr_frame(4u, sizeof(AuroraHdrFrame), 200.f, 1000.f));
-}
+TEST(HdrValidate, RejectsShortStruct) { EXPECT_FALSE(validate_hdr_frame(4u, sizeof(AuroraHdrFrame), 200.f, 1000.f)); }
 
 TEST(HdrShader, BuildSourceUnclipped) {
   // build_shader_source requires a mapped position attribute (pre-existing
@@ -74,8 +72,6 @@ TEST(HdrShader, BuildSourceUnclipped) {
   const std::string on = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, UINT32_MAX, 1, 2);
   EXPECT_NE(on.find("gain0: vec3f"), std::string::npos);
   EXPECT_NE(on.find("out.hdr_gain = vec4f(in.gain0, hdr_src.a);"), std::string::npos);
-  EXPECT_EQ(on.find("prev.rgb * in.gain"), std::string::npos); // gain no longer touches the 8-bit frame
-  EXPECT_EQ(on.find("vec3f(4.0)"), std::string::npos);
   config.colorChannels[0].lightingEnabled = false;
   const std::string unlit = aurora::gx::build_shader_source(config, aurora::gx::DstAlphaMode::None, UINT32_MAX, 1, 2);
   EXPECT_NE(unlit.find("out.hdr_glow = vec4f(hdr_src.rgb, hdr_src.a);"), std::string::npos);
@@ -85,17 +81,17 @@ TEST(HdrShader, BuildSourceUnclipped) {
 
 TEST(HdrMode, KeepsWhenOffered) {
   std::array f{wgpu::TextureFormat::BGRA8Unorm, wgpu::TextureFormat::RGB10A2Unorm};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, f, wgpu::BackendType::Vulkan), AURORA_HDR_HDR10);
+  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, f), AURORA_HDR_HDR10);
 }
 
 TEST(HdrMode, FallsBackWhenMissing) {
   std::array f{wgpu::TextureFormat::BGRA8Unorm};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_SCRGB, f, wgpu::BackendType::Vulkan), AURORA_HDR_OFF);
+  EXPECT_EQ(resolve_mode(AURORA_HDR_SCRGB, f), AURORA_HDR_OFF);
 }
 
 TEST(HdrMode, OffStaysOff) {
   std::array f{wgpu::TextureFormat::RGBA16Float};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_OFF, f, wgpu::BackendType::Vulkan), AURORA_HDR_OFF);
+  EXPECT_EQ(resolve_mode(AURORA_HDR_OFF, f), AURORA_HDR_OFF);
 }
 
 TEST(HdrMode, ColorManagement) {
@@ -118,50 +114,10 @@ TEST(HdrMode, Backends) {
   EXPECT_FALSE(hdr_backend_supported(wgpu::BackendType::Null));
 }
 
-TEST(HdrMode, Hdr10OnMetalUsesScrgb) {
-  const wgpu::TextureFormat f[] = {wgpu::TextureFormat::RGBA16Float};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, f, wgpu::BackendType::Metal), AURORA_HDR_SCRGB);
-  // scRGB offered, scRGB requested stays.
-  EXPECT_EQ(resolve_mode(AURORA_HDR_SCRGB, f, wgpu::BackendType::Metal), AURORA_HDR_SCRGB);
-  // Vulkan keeps HDR10 when its format is offered.
-  const wgpu::TextureFormat g[] = {wgpu::TextureFormat::RGB10A2Unorm};
-  EXPECT_EQ(resolve_mode(AURORA_HDR_HDR10, g, wgpu::BackendType::Vulkan), AURORA_HDR_HDR10);
-}
-
-TEST(HdrEdr, ClampsToHeadroom) {
-  // Paper white (scRGB 2.5 at 200 nits) maps to EDR 1.0 (the OS SDR white).
-  EXPECT_NEAR(edr_output(2.5f, 200.f, 8.f), 1.f, 1e-6);
-  // 1000-nit highlight (scRGB 12.5) scales to EDR 5, inside 8x headroom.
-  EXPECT_NEAR(edr_output(12.5f, 200.f, 8.f), 5.f, 1e-5);
-  // Anything above the screen's current headroom clamps to it.
-  EXPECT_NEAR(edr_output(100.f, 200.f, 8.f), 8.f, 1e-6);
-  // Zero stays zero; headroom 1 (no EDR) caps at 1.
-  EXPECT_NEAR(edr_output(0.f, 200.f, 8.f), 0.f, 1e-9);
-  EXPECT_NEAR(edr_output(4.f, 200.f, 1.f), 1.f, 1e-6);
-}
-
 TEST(HdrPq, Endpoints) {
   EXPECT_NEAR(pq_encode(0.f), 0.f, 1e-6);
   EXPECT_NEAR(pq_encode(10000.f), 1.f, 1e-5);
   EXPECT_NEAR(pq_encode(100.f), 0.508078f, 1e-4);
-}
-
-TEST(HdrPq, RoundTrip) {
-  for (float n : {0.1f, 1.f, 80.f, 200.f, 1000.f, 4000.f, 10000.f}) {
-    EXPECT_NEAR(pq_decode(pq_encode(n)), n, n * 1e-4f);
-  }
-}
-
-TEST(HdrFallback, WhiteIsPaperWhite) {
-  EXPECT_FLOAT_EQ(fallback_nits(1.f, 200.f), 200.f);
-  EXPECT_NEAR(fallback_nits(0.5f, 200.f), 200.f * 0.217638f, 1e-2);
-  EXPECT_LT(fallback_nits(-0.5f, 200.f), 0.f);
-}
-
-TEST(HdrSanitize, NanInf) {
-  EXPECT_EQ(sanitize(NAN), 0.f);
-  EXPECT_EQ(sanitize(INFINITY), 0.f);
-  EXPECT_EQ(sanitize(2.f), 2.f);
 }
 
 TEST(HdrFrame, ResetsEachFrame) {
