@@ -403,18 +403,6 @@ std::string tev_op(GXTevOp op, std::string_view bias, std::string_view scale, st
   }
 }
 
-std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
-                         std::string_view b, std::string_view c, std::string_view d) {
-  std::string expr = tev_op(op, bias, scale, a, b, c, d, "vec3(0)"sv);
-  return clamp ? fmt::format("clamp({}, vec3f(0.0), vec3f(1.0))", expr)
-               : fmt::format("clamp({}, vec3f(-4.0), vec3f(4.0))", expr);
-}
-
-std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
-                         std::string_view b, std::string_view c, std::string_view d) {
-  std::string expr = tev_op(op, bias, scale, a, b, c, d, "0.0"sv);
-  return clamp ? fmt::format("clamp({}, 0.0, 1.0)", expr) : fmt::format("clamp({}, -4.0, 4.0)", expr);
-}
 
 std::string_view tev_bias(GXTevBias bias) {
   switch (bias) {
@@ -776,7 +764,11 @@ constexpr std::string_view nbt_slice_local(NbtSlice slice) noexcept {
 
 constexpr bool is_emboss_texgen(GXTexGenType type) noexcept { return type >= GX_TG_BUMP0 && type <= GX_TG_BUMP7; }
 
-auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha) -> std::string {
+absl::flat_hash_set<gfx::ShaderRef> s_seenShaders;
+} // namespace
+
+// Exposed for unit testing of the unclip clamp behavior (external linkage).
+std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha) {
   std::string_view swizzle = alpha ? ".a"sv : ""sv;
   std::string outVar;
   std::string_view posVar;
@@ -809,6 +801,11 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 
   if (!cc.lightingEnabled) {
     return fmt::format("\n    {0}{2} = {1}{2};", outVar, matSrc, swizzle);
   }
+  // HDR: TEV keeps hardware clamps; how far the lighting exceeds 1 is applied to the TEV output.
+  // Per-vertex lighting only, like UsePerPixelLighting today; per-pixel would need a local gain.
+  const std::string gainLine = config.unclipLighting && !alpha && !UsePerPixelLighting
+                                   ? fmt::format("\n      out.gain{} = max(lighting.rgb, vec3f(1.0));", i)
+                                   : std::string{};
   GXDiffuseFn diffFn = cc.diffFn;
   std::string lightAttnFn;
   if (cc.attnFn == GX_AF_NONE) {
@@ -861,19 +858,32 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 
           var diff = {3};
           lighting = lighting + (attn * diff * light.color);
       }}
-      {7}{8} = ({4} * clamp(lighting, vec4f(0.0), vec4f(1.0))){8};
+      {7}{8} = ({4} * clamp(lighting, vec4f(0.0), vec4f(1.0))){8};{10}
     }})""",
                      i, GX::MaxLights, lightAttnFn, lightDiffFn, matSrc, ambSrc, posVar, outVar, swizzle,
-                     alpha ? "a"sv : ""sv);
+                     alpha ? "a"sv : ""sv, gainLine);
 }
 
-absl::flat_hash_set<gfx::ShaderRef> s_seenShaders;
-} // namespace
+// Exposed for unit testing of the HDR codegen (external linkage).
+std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d) {
+  std::string expr = tev_op(op, bias, scale, a, b, c, d, "vec3(0)"sv);
+  return clamp ? fmt::format("clamp({}, vec3f(0.0), vec3f(1.0))", expr)
+               : fmt::format("clamp({}, vec3f(-4.0), vec3f(4.0))", expr);
+}
 
-std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode,
-                                uint32_t normalAttachment) noexcept {
+std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d) {
+  std::string expr = tev_op(op, bias, scale, a, b, c, d, "0.0"sv);
+  return clamp ? fmt::format("clamp({}, 0.0, 1.0)", expr) : fmt::format("clamp({}, -4.0, 4.0)", expr);
+}
+
+std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode, uint32_t normalAttachment,
+                                uint32_t hdrGainAttachment, uint32_t hdrGlowAttachment) noexcept {
   ZoneScoped;
-  const auto hash = xxh3_hash(dstAlphaMode, xxh3_hash(normalAttachment, xxh3_hash(config)));
+  const auto hash =
+      xxh3_hash(dstAlphaMode, xxh3_hash(hdrGlowAttachment,
+                                        xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
   const auto info = build_shader_info(config);
   if (EnableDebugPrints && !s_seenShaders.contains(hash)) {
     s_seenShaders.insert(hash);
@@ -1123,6 +1133,18 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
   if (lastStage.alphaOp.outReg != 0) {
     fragmentFn += fmt::format("\n    prev.a = {0}.a;", regName[lastStage.alphaOp.outReg]);
   }
+  // HDR side-buffer values: the lighting gain of the first lit channel, and whether the draw is unlit
+  // (only unlit additive draws count as glow).
+  std::string hdrGainExpr = "vec3f(1.0)";
+  bool hdrLit = false;
+  for (int i = 0; i < info.sampledColorChannels.size(); ++i) {
+    if (info.sampledColorChannels.test(i) && config.colorChannels[i].lightingEnabled) {
+      if (!hdrLit && config.unclipLighting && !UsePerPixelLighting) {
+        hdrGainExpr = fmt::format("in.gain{}", i);
+      }
+      hdrLit = true;
+    }
+  }
 
   if (info.loadsTevReg.test(0)) {
     uniBufAttrs += "\n    tevprev: vec4f,";
@@ -1200,6 +1222,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
       fragmentFnPre += lighting_func(config, cca, i, true);
     } else {
       vtxOutAttrs += fmt::format("\n    @location({}) cc{}: vec4f,", vtxOutIdx++, i);
+      if (config.unclipLighting && cc.lightingEnabled) {
+        vtxOutAttrs += fmt::format("\n    @location({}) gain{}: vec3f,", vtxOutIdx++, i);
+      }
       vtxXfrAttrs += lighting_func(config, cc, i, false);
       vtxXfrAttrs += lighting_func(config, cca, i, true);
       fragmentFnPre += fmt::format("\n    var rast{0} = in.cc{0};", i);
@@ -1634,6 +1659,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
     fragmentFn += "\n    prev = vec4f(in.nrm, prev.a);";
   }
 
+  const bool hdrSide = hdrGainAttachment != UINT32_MAX && hdrGlowAttachment != UINT32_MAX;
+  if (hdrSide) {
+    // Side-buffer blends use the real source alpha, before destination-alpha replacement.
+    fragmentFn += "\n    let hdr_src = prev;";
+  }
   if (dstAlphaMode == DstAlphaMode::Replace) {
     // GX destination alpha is set via the blend constant
     fragmentFn += "\n    prev.a = 1.0;";
@@ -1642,15 +1672,26 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
   std::string fragmentOutput;
   std::string_view fragmentOutputType = "@location(0) vec4f"sv;
   std::string fragmentReturn = "\n    return prev;"s;
-  if (normalAttachment != UINT32_MAX) {
-    fragmentOutput = fmt::format(
-        "\nstruct FragmentOutput {{\n"
-        "    @location(0) color: vec4f,\n"
-        "    @location({}) normal: vec4f,\n"
-        "}};\n",
-        normalAttachment);
+  if (normalAttachment != UINT32_MAX || hdrSide) {
+    std::string fields = "    @location(0) color: vec4f,\n";
+    if (normalAttachment != UINT32_MAX) {
+      fields += fmt::format("    @location({}) normal: vec4f,\n", normalAttachment);
+    }
+    if (hdrSide) {
+      fields += fmt::format("    @location({}) hdr_gain: vec4f,\n    @location({}) hdr_glow: vec4f,\n",
+                            hdrGainAttachment, hdrGlowAttachment);
+    }
+    fragmentOutput = fmt::format("\nstruct FragmentOutput {{\n{}}};\n", fields);
     fragmentOutputType = "FragmentOutput"sv;
     fragmentReturn = "\n    var out: FragmentOutput;\n    out.color = prev;";
+    if (hdrSide) {
+      fragmentReturn += fmt::format(
+          "\n    out.hdr_gain = vec4f({}, hdr_src.a);"
+          "\n    out.hdr_glow = vec4f({}, hdr_src.a);",
+          hdrGainExpr, hdrLit ? "vec3f(0.0)" : "hdr_src.rgb");
+    }
+  }
+  if (normalAttachment != UINT32_MAX) {
     if (useNormalTarget) {
       fragmentReturn +=
           "\n    let nrm_len_sq = dot(in.mv_nrm, in.mv_nrm);"
@@ -1659,6 +1700,8 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
     } else {
       fragmentReturn += "\n    out.normal = vec4f(0.5, 0.5, 0.5, 0.0);";
     }
+  }
+  if (normalAttachment != UINT32_MAX || hdrSide) {
     fragmentReturn += "\n    return out;";
   }
 
@@ -2057,13 +2100,28 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config, const gfx::RenderTar
                                 DstAlphaMode dstAlphaMode) noexcept {
   ZoneScoped;
   uint32_t normalAttachment = UINT32_MAX;
+  uint32_t hdrGainAttachment = UINT32_MAX;
+  uint32_t hdrGlowAttachment = UINT32_MAX;
   for (uint32_t i = 0; i < layout.colorAttachmentCount; ++i) {
-    if (layout.colorAttachments[i].semantic == gfx::ColorAttachmentSemantic::Normal) {
+    switch (layout.colorAttachments[i].semantic) {
+    case gfx::ColorAttachmentSemantic::Normal:
       normalAttachment = i;
+      break;
+    case gfx::ColorAttachmentSemantic::HdrGain:
+      hdrGainAttachment = i;
+      break;
+    case gfx::ColorAttachmentSemantic::HdrGlow:
+      hdrGlowAttachment = i;
+      break;
+    default:
+      break;
     }
   }
-  const auto shaderSource = build_shader_source(config, dstAlphaMode, normalAttachment);
-  const auto hash = xxh3_hash(dstAlphaMode, xxh3_hash(normalAttachment, xxh3_hash(config)));
+  const auto shaderSource =
+      build_shader_source(config, dstAlphaMode, normalAttachment, hdrGainAttachment, hdrGlowAttachment);
+  const auto hash =
+      xxh3_hash(dstAlphaMode, xxh3_hash(hdrGlowAttachment,
+                                        xxh3_hash(hdrGainAttachment, xxh3_hash(normalAttachment, xxh3_hash(config)))));
   wgpu::ShaderSourceWGSL wgslDescriptor{};
   wgslDescriptor.code = shaderSource.c_str();
   const auto label = fmt::format("GX Shader {:x}", hash);

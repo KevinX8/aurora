@@ -494,7 +494,8 @@ struct ShaderConfig {
   u8 vtxStride = 0;
   u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
   u8 fogRangeEnabled : 1 = false;
-  u8 pad1 : 5 = 0;
+  u8 unclipLighting : 1 = false;
+  u8 pad1 : 4 = 0;
   u8 pad2 = 0;
   std::array<AttrConfig, MaxVtxAttr> attrs;
   std::array<TevSwap, MaxTevSwap> tevSwapTable;
@@ -542,10 +543,31 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, const gfx::Ren
                                     const PipelineOptions& options, ArrayRef<wgpu::VertexBufferLayout> vtxBuffers,
                                     wgpu::ShaderModule shader, const char* label) noexcept;
 std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlphaMode,
-                                uint32_t normalAttachment = UINT32_MAX) noexcept;
+                                uint32_t normalAttachment = UINT32_MAX, uint32_t hdrGainAttachment = UINT32_MAX,
+                                uint32_t hdrGlowAttachment = UINT32_MAX) noexcept;
 wgpu::ShaderModule build_shader(const ShaderConfig& config, const gfx::RenderTargetLayout& layout,
                                 DstAlphaMode dstAlphaMode) noexcept;
 GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept;
+
+// Exposed for unit testing of the HDR codegen.
+std::string tev_color_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d);
+std::string tev_alpha_op(GXTevOp op, std::string_view bias, std::string_view scale, bool clamp, std::string_view a,
+                         std::string_view b, std::string_view c, std::string_view d);
+std::string lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 i, bool alpha);
+
+// How a draw updates the HDR side buffers, from its scene blend mode. Opaque draws replace the gain and
+// clear the glow; alpha-blended draws fade both by their alpha; additive draws accumulate glow color.
+struct HdrSideBlend {
+  bool write = false;
+  bool replace = false; // no blending: overwrite
+  wgpu::BlendState state{};
+};
+struct HdrSideBlends {
+  HdrSideBlend gain;
+  HdrSideBlend glow;
+};
+HdrSideBlends hdr_side_blends(const PipelineConfig& config) noexcept;
 
 u8 comp_type_size(GXAttr attr, GXCompType type) noexcept;
 u8 comp_cnt_count(GXAttr attr, GXCompCnt cnt) noexcept;

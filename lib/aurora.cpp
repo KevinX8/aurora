@@ -13,6 +13,7 @@
 #include "imgui.hpp"
 #include "webgpu/gpu.hpp"
 #include "webgpu/gpu_prof.hpp"
+#include "webgpu/hdr.hpp"
 #include <webgpu/webgpu_cpp.h>
 #endif
 
@@ -60,6 +61,58 @@ void set_present_viewport(const wgpu::RenderPassEncoder& pass, const gfx::Viewpo
   const auto scissorRight = clamp_scissor_coord(std::ceil(viewport.left + viewport.width), surfaceWidth);
   const auto scissorBottom = clamp_scissor_coord(std::ceil(viewport.top + viewport.height), surfaceHeight);
   pass.SetScissorRect(scissorX, scissorY, scissorRight - scissorX, scissorBottom - scissorY);
+}
+
+void present_hdr(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& view, const webgpu::Viewport& viewport,
+                 const wgpu::BindGroup& rmlBindGroup, const imgui::DrawData& imguiDrawData, const AuroraHdrFrame& frame,
+                 const webgpu::TextureWithSampler& sceneSource) {
+  // UI goes to a float overlay composited by the encode. Unlike SDR, a backdrop RmlUi frame needs no
+  // special case: its float target already holds the HDR scene behind the menu.
+  const auto surfaceWidth = webgpu::g_graphicsConfig.surfaceConfiguration.width;
+  const auto surfaceHeight = webgpu::g_graphicsConfig.surfaceConfiguration.height;
+  {
+    const std::array attachments{
+        wgpu::RenderPassColorAttachment{
+            .view = webgpu::g_uiOverlay.view,
+            .loadOp = wgpu::LoadOp::Clear,
+            .storeOp = wgpu::StoreOp::Store,
+        },
+    };
+    const wgpu::RenderPassDescriptor renderPassDescriptor{
+        .label = "HDR UI overlay render pass",
+        .colorAttachmentCount = attachments.size(),
+        .colorAttachments = attachments.data(),
+        .timestampWrites = webgpu::gpu_prof::pass_writes("HDR UI overlay"),
+    };
+    const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+    if (rmlBindGroup) {
+      pass.SetPipeline(webgpu::g_CopyPremultipliedAlphaPipeline);
+      pass.SetBindGroup(0, rmlBindGroup, 0, nullptr);
+      set_present_viewport(pass, viewport, surfaceWidth, surfaceHeight);
+      pass.Draw(3);
+    }
+    pass.End();
+  }
+  {
+    const std::array attachments{
+        wgpu::RenderPassColorAttachment{
+            .view = webgpu::g_uiOverlay.view,
+            .loadOp = wgpu::LoadOp::Load,
+            .storeOp = wgpu::StoreOp::Store,
+        },
+    };
+    const wgpu::RenderPassDescriptor renderPassDescriptor{
+        .label = "HDR ImGui render pass",
+        .colorAttachmentCount = attachments.size(),
+        .colorAttachments = attachments.data(),
+        .timestampWrites = webgpu::gpu_prof::pass_writes("HDR ImGui"),
+    };
+    const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+    pass.SetViewport(0.f, 0.f, static_cast<float>(surfaceWidth), static_cast<float>(surfaceHeight), 0.f, 1.f);
+    imgui::render(pass, imguiDrawData);
+    pass.End();
+  }
+  webgpu::hdr_encode(encoder, view, viewport, frame, sceneSource);
 }
 #endif
 
@@ -125,6 +178,12 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   }
   if (g_config.maxTextureAnisotropy == 0) {
     g_config.maxTextureAnisotropy = 16;
+  }
+  if (g_config.hdrPaperWhiteNits == 0.f) {
+    g_config.hdrPaperWhiteNits = 200.f;
+  }
+  if (g_config.hdrPeakNits == 0.f) {
+    g_config.hdrPeakNits = 1000.f;
   }
   AURORA_ASSERT(window::initialize(), "Error initializing window");
 
@@ -236,6 +295,7 @@ const AuroraEvent* update() noexcept {
 bool begin_frame() noexcept {
   ZoneScoped;
 #ifdef AURORA_ENABLE_GX
+  webgpu::hdr::g_frameState.begin_frame();
   {
     if (!window::is_presentable()) {
       webgpu::release_surface();
@@ -269,8 +329,13 @@ void end_frame() noexcept {
   gx::texture::end_frame();
   gfx::finish();
   auto imguiDrawData = imgui::freeze();
+  const auto hdrFrame = webgpu::hdr::g_frameState.pending;
 
-  const auto& presentSource = webgpu::present_source();
+  // A mod's scene texture is referenced here, on the main thread, so the render worker never
+  // touches the borrowed handle after the mod's frame ends.
+  const auto sceneSource =
+      hdrFrame.sceneTexture != nullptr ? webgpu::hdr_scene_source(hdrFrame) : webgpu::TextureWithSampler{};
+  const auto& presentSource = sceneSource.texture ? sceneSource : webgpu::present_source();
   const auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
                                                            webgpu::g_graphicsConfig.surfaceConfiguration.height,
                                                            presentSource.size.width, presentSource.size.height);
@@ -279,14 +344,14 @@ void end_frame() noexcept {
   bool rmlOverlay = false;
 #if AURORA_ENABLE_RMLUI
   if (rmlui::is_initialized()) {
-    auto rmlFrame = rmlui::record_frame(viewport);
+    auto rmlFrame = rmlui::record_frame(viewport, presentSource);
     rmlBindGroup = std::move(rmlFrame.bindGroup);
     rmlOverlay = rmlFrame.overlay;
   }
 #endif
 
   gfx::end_frame([rmlBindGroup = std::move(rmlBindGroup), rmlOverlay, viewport,
-                  imguiDrawData = std::move(imguiDrawData)](
+                  imguiDrawData = std::move(imguiDrawData), hdrFrame, sceneSource](
                      wgpu::CommandEncoder& encoder, std::vector<gfx::AfterSubmitCallback> afterSubmitCallbacks) {
     wgpu::Texture currentTexture;
     wgpu::TextureView currentView;
@@ -306,7 +371,9 @@ void end_frame() noexcept {
     }
 
     const bool canPresent = currentTexture && currentView;
-    if (canPresent) {
+    if (canPresent && webgpu::g_hdrMode != AURORA_HDR_OFF) {
+      present_hdr(encoder, currentView, viewport, rmlBindGroup, imguiDrawData, hdrFrame, sceneSource);
+    } else if (canPresent) {
       wgpu::BindGroup presentBindGroup;
       if (rmlBindGroup && !rmlOverlay) {
         presentBindGroup = rmlBindGroup;
@@ -455,6 +522,22 @@ const AuroraEvent* aurora_update() { return aurora::update(); }
 bool aurora_begin_frame() { return aurora::begin_frame(); }
 void aurora_end_frame() { aurora::end_frame(); }
 AuroraBackend aurora_get_backend() { return aurora::g_config.desiredBackend; }
+AuroraHdrMode aurora_get_hdr_mode() {
+#ifdef AURORA_ENABLE_GX
+  return aurora::webgpu::g_hdrMode;
+#else
+  return AURORA_HDR_OFF;
+#endif
+}
+void aurora_set_hdr_frame(const AuroraHdrFrame* frame) {
+#ifdef AURORA_ENABLE_GX
+  if (frame != nullptr && aurora::webgpu::g_hdrMode != AURORA_HDR_OFF) {
+    aurora::webgpu::hdr::g_frameState.pending = *frame;
+  }
+#else
+  (void)frame;
+#endif
+}
 const AuroraBackend* aurora_get_available_backends(size_t* count) {
   if (count != nullptr) {
     *count = aurora::PreferredBackendOrder.size();

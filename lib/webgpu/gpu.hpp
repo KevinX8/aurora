@@ -12,13 +12,16 @@ struct SDL_Window;
 
 namespace aurora::webgpu {
 inline constexpr wgpu::TextureFormat NormalBufferFormat = wgpu::TextureFormat::RGB10A2Unorm;
+inline constexpr wgpu::TextureFormat HdrSideBufferFormat = wgpu::TextureFormat::RGBA16Float;
 
 struct GraphicsConfig {
   wgpu::SurfaceConfiguration surfaceConfiguration;
+  wgpu::TextureFormat colorFormat;
   wgpu::TextureFormat depthFormat;
   uint32_t msaaSamples;
   uint16_t textureAnisotropy;
   bool normalBuffer = false;
+  bool hdrSideBuffers = false;
 };
 struct TextureWithSampler {
   wgpu::Texture texture;
@@ -47,13 +50,17 @@ extern wgpu::Queue g_queue;
 extern wgpu::Surface g_surface;
 extern wgpu::BackendType g_backendType;
 extern GraphicsConfig g_graphicsConfig;
+extern AuroraHdrMode g_hdrMode;
 extern TextureWithSampler g_frameBuffer;
 extern TextureWithSampler g_frameBufferResolved;
 extern TextureWithSampler g_depthBuffer;
 extern TextureWithSampler g_normalBuffer;
+extern TextureWithSampler g_hdrGainBuffer;
+extern TextureWithSampler g_hdrGlowBuffer;
 extern wgpu::RenderPipeline g_CopyPipeline;
 extern wgpu::RenderPipeline g_CopyPremultipliedAlphaPipeline;
 extern wgpu::BindGroup g_CopyBindGroup;
+extern TextureWithSampler g_uiOverlay;
 extern wgpu::Instance g_instance;
 extern wgpu::AdapterInfo g_adapterInfo;
 extern bool g_hasCoreFeatures;
@@ -67,7 +74,9 @@ void shutdown();
 void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);
 void resize_swapchain(uint32_t width, uint32_t height, uint32_t nativeWidth, uint32_t nativeHeight, bool force = false);
-TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
+TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled,
+                                         wgpu::TextureFormat format = g_graphicsConfig.colorFormat);
+wgpu::TextureFormat ui_format() noexcept;
 bool enable_normal_buffer();
 const TextureWithSampler& present_source() noexcept;
 wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
@@ -76,6 +85,13 @@ AuroraSampler get_resampler() noexcept;
 Viewport calculate_present_viewport(uint32_t surface_width, uint32_t surface_height, uint32_t content_width,
                                     uint32_t content_height) noexcept;
 const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport);
+const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport,
+                                                  const TextureWithSampler& source);
+// Wraps (and references) a frame's non-null scene texture override for presentation.
+TextureWithSampler hdr_scene_source(const AuroraHdrFrame& frame);
+// Encodes sceneSource, or the game frame when it is empty, into the HDR surface.
+void hdr_encode(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& target, const Viewport& viewport,
+                const AuroraHdrFrame& frame, const TextureWithSampler& sceneSource);
 void draw_clear(const wgpu::RenderPassEncoder& pass, bool clearColor, bool clearAlpha, bool clearDepth,
                 const Vec4<float>& clearColorValue, float clearDepthValue);
 

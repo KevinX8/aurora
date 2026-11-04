@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@
 #include <aurora/aurora.h>
 #include <aurora/webgpu.hpp>
 #include <aurora/gfx.h>
+#include <fmt/format.h>
 #include <magic_enum.hpp>
 #include <webgpu/webgpu_cpp.h>
 
@@ -24,6 +26,7 @@
 #include "../internal.hpp"
 #include "../window.hpp"
 #include "gpu_prof.hpp"
+#include "hdr.hpp"
 
 #ifdef WEBGPU_DAWN
 #include "../dawn/TracyPlatform.hpp"
@@ -45,10 +48,15 @@ wgpu::Queue g_queue;
 wgpu::Surface g_surface;
 wgpu::BackendType g_backendType;
 GraphicsConfig g_graphicsConfig;
+AuroraHdrMode g_hdrMode = AURORA_HDR_OFF;
+// The mode the surface is created for; drops to OFF when the display offers no HDR format.
+static AuroraHdrMode g_surfaceHdrMode = AURORA_HDR_OFF;
 TextureWithSampler g_frameBuffer;
 TextureWithSampler g_frameBufferResolved;
 TextureWithSampler g_depthBuffer;
 TextureWithSampler g_normalBuffer;
+TextureWithSampler g_hdrGainBuffer;
+TextureWithSampler g_hdrGlowBuffer;
 
 // EFB -> XFB copy pipeline
 static wgpu::BindGroupLayout g_CopyBindGroupLayout;
@@ -60,6 +68,10 @@ static wgpu::BindGroupLayout g_ResampleBindGroupLayout;
 static wgpu::RenderPipeline g_ResamplePipeline;
 static wgpu::Buffer g_ResampleUniformBuffer;
 static TextureWithSampler g_resampledFrameBuffer;
+static wgpu::BindGroupLayout g_HdrEncodeBindGroupLayout;
+static wgpu::RenderPipeline g_HdrEncodePipeline;
+static wgpu::Buffer g_HdrEncodeUniformBuffer;
+TextureWithSampler g_uiOverlay;
 
 static wgpu::Adapter g_adapter;
 wgpu::Instance g_instance;
@@ -99,6 +111,90 @@ struct ResampleUniformBlock {
   float frameWidth = 0.f;
   float frameHeight = 0.f;
 };
+
+struct HdrEncodeUniformBlock {
+  uint32_t mode;
+  uint32_t sceneLinear;
+  float paperWhite;
+  float peak;
+  // Apple EDR: scale scRGB by 80/paperWhite and clamp to the screen's current headroom
+  // (1 = user's SDR white). Inactive elsewhere (scale 1, huge peak).
+  float edrScale;
+  float edrPeak;
+};
+
+// PQ constants are prepended from hdr.hpp so shader and CPU math share one source.
+constexpr std::string_view hdrEncodeShaderSource = R"WGSL(
+struct Uniforms {
+    mode: u32,
+    scene_linear: u32,
+    paper_white: f32,
+    peak: f32,
+    edr_scale: f32,
+    edr_peak: f32,
+};
+
+struct VertexOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var efb_sampler: sampler;
+@group(0) @binding(2) var scene: texture_2d<f32>;
+@group(0) @binding(3) var overlay: texture_2d<f32>;
+
+// WGSL matrices are column-major: each vec3 below is one column.
+const REC709_TO_2020 = mat3x3<f32>(
+    vec3<f32>(0.627404, 0.069097, 0.016391),
+    vec3<f32>(0.329283, 0.919540, 0.088013),
+    vec3<f32>(0.043313, 0.011362, 0.895595),
+);
+
+var<private> corners: array<vec2<f32>, 3> = array<vec2<f32>, 3>(
+    vec2(-1.0, 1.0),
+    vec2(-1.0, -3.0),
+    vec2(3.0, 1.0),
+);
+var<private> uvs: array<vec2<f32>, 3> = array<vec2<f32>, 3>(
+    vec2(0.0, 0.0),
+    vec2(0.0, 2.0),
+    vec2(2.0, 0.0),
+);
+
+@vertex
+fn vs_main(@builtin(vertex_index) vtxIdx: u32) -> VertexOutput {
+    var out: VertexOutput;
+    out.pos = vec4<f32>(corners[vtxIdx], 0.0, 1.0);
+    out.uv = uvs[vtxIdx];
+    return out;
+}
+
+fn pq_encode(nits: vec3<f32>) -> vec3<f32> {
+    let y = pow(max(nits, vec3<f32>(0.0)) / 10000.0, vec3<f32>(PQ_M1));
+    return pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), vec3<f32>(PQ_M2));
+}
+
+@fragment
+fn fs_hdr_encode(in: VertexOutput) -> @location(0) vec4<f32> {
+    // scRGB units: 1.0 = 80 nits
+    let scene_raw = textureSample(scene, efb_sampler, in.uv).rgb;
+    // abs(x) < big is false for NaN and ±Inf; this tint has no isFinite builtin
+    let c = select(vec3<f32>(0.0), scene_raw, abs(scene_raw) < vec3<f32>(1e30));
+    let scale = uniforms.paper_white / 80.0;
+    let scene_lin = select(sign(c) * pow(abs(c), vec3<f32>(2.2)) * scale, c, uniforms.scene_linear != 0u);
+    let ui = textureLoad(overlay, vec2<i32>(in.pos.xy), 0);
+    // Sign-safe like the scene path: float UI layers can carry the scene's negative (wide-gamut) values.
+    let ui_g = ui.rgb / max(ui.a, 0.000001);
+    let ui_lin = sign(ui_g) * pow(abs(ui_g), vec3<f32>(2.2)) * ui.a * scale;
+    let o = min(scene_lin * (1.0 - ui.a) + ui_lin, vec3<f32>(uniforms.peak / 80.0));
+    if (uniforms.mode == 1u) {
+        return vec4<f32>(pq_encode(max(REC709_TO_2020 * o, vec3<f32>(0.0)) * 80.0), 1.0);
+    }
+    // Apple EDR: 1.0 is the OS SDR white; cap at the screen's current headroom.
+    return vec4<f32>(min(o * uniforms.edr_scale, vec3<f32>(uniforms.edr_peak)), 1.0);
+}
+)WGSL"sv;
 
 constexpr std::string_view resampleShaderSource = R"(
 struct Uniforms {
@@ -260,13 +356,13 @@ wgpu::PresentMode select_present_mode(const wgpu::SurfaceCapabilities& capabilit
   return wgpu::PresentMode::Fifo;
 }
 
-TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled) {
+TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled,
+                                         wgpu::TextureFormat format) {
   const wgpu::Extent3D size{
       .width = width,
       .height = height,
       .depthOrArrayLayers = 1,
   };
-  const auto format = g_graphicsConfig.surfaceConfiguration.format;
   uint32_t sampleCount = 1;
   if (multisampled) {
     sampleCount = g_graphicsConfig.msaaSamples;
@@ -314,6 +410,12 @@ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool m
       .format = format,
       .sampler = std::move(sampler),
   };
+}
+
+wgpu::TextureFormat ui_format() noexcept {
+  // Float in HDR: RmlUi backdrop-filter menus seed their layer with the game frame, and an
+  // 8-bit layer would clip the scene's above-paper-white values while the menu is open.
+  return g_hdrMode != AURORA_HDR_OFF ? wgpu::TextureFormat::RGBA16Float : g_graphicsConfig.surfaceConfiguration.format;
 }
 
 const TextureWithSampler& present_source() noexcept {
@@ -513,10 +615,10 @@ fn fs_premultiplied_alpha(in: VertexOutput) -> @location(0) vec4<f32> {
   };
   auto pipelineLayout = g_device.CreatePipelineLayout(&layoutDescriptor);
 
-  const auto make_copy_pipeline = [&](const char* label, const char* fragmentEntryPoint,
-                                      const wgpu::BlendState* blend) {
+  const auto make_copy_pipeline = [&](const char* label, const char* fragmentEntryPoint, const wgpu::BlendState* blend,
+                                      wgpu::TextureFormat format) {
     const std::array colorTargets{wgpu::ColorTargetState{
-        .format = g_graphicsConfig.surfaceConfiguration.format,
+        .format = format,
         .blend = blend,
         .writeMask = wgpu::ColorWriteMask::All,
     }};
@@ -547,7 +649,8 @@ fn fs_premultiplied_alpha(in: VertexOutput) -> @location(0) vec4<f32> {
     };
     return g_device.CreateRenderPipeline(&pipelineDescriptor);
   };
-  g_CopyPipeline = make_copy_pipeline("XFB Copy Pipeline", "fs_opaque", nullptr);
+  g_CopyPipeline =
+      make_copy_pipeline("XFB Copy Pipeline", "fs_opaque", nullptr, g_graphicsConfig.surfaceConfiguration.format);
 
   const wgpu::BlendState premultipliedAlphaBlend{
       .color =
@@ -563,8 +666,13 @@ fn fs_premultiplied_alpha(in: VertexOutput) -> @location(0) vec4<f32> {
               .dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha,
           },
   };
-  g_CopyPremultipliedAlphaPipeline =
-      make_copy_pipeline("XFB Premultiplied Alpha Copy Pipeline", "fs_premultiplied_alpha", &premultipliedAlphaBlend);
+  g_CopyPremultipliedAlphaPipeline = make_copy_pipeline(
+      "XFB Premultiplied Alpha Copy Pipeline", "fs_premultiplied_alpha", &premultipliedAlphaBlend, ui_format());
+}
+
+// Float in HDR so the presented frame keeps above-white and wide-gamut values; SDR is unchanged.
+wgpu::TextureFormat resample_format() noexcept {
+  return g_hdrMode != AURORA_HDR_OFF ? wgpu::TextureFormat::RGBA16Float : g_graphicsConfig.surfaceConfiguration.format;
 }
 
 void create_resample_pipeline() {
@@ -576,7 +684,7 @@ void create_resample_pipeline() {
   };
   auto module = g_device.CreateShaderModule(&moduleDescriptor);
   const std::array colorTargets{wgpu::ColorTargetState{
-      .format = g_graphicsConfig.surfaceConfiguration.format,
+      .format = resample_format(),
       .writeMask = wgpu::ColorWriteMask::All,
   }};
   const wgpu::FragmentState fragmentState{
@@ -651,6 +759,104 @@ void create_resample_pipeline() {
   g_ResampleUniformBuffer = g_device.CreateBuffer(&uniformBufferDescriptor);
 }
 
+void create_hdr_encode_pipeline() {
+  const std::string constants = fmt::format(
+      "const PQ_M1: f32 = {};\nconst PQ_M2: f32 = {};\nconst PQ_C1: f32 = {};\nconst PQ_C2: f32 = {};\n"
+      "const PQ_C3: f32 = {};\n",
+      hdr::PQ_M1, hdr::PQ_M2, hdr::PQ_C1, hdr::PQ_C2, hdr::PQ_C3);
+  const std::string source = constants + std::string{hdrEncodeShaderSource};
+  wgpu::ShaderSourceWGSL sourceDescriptor{};
+  sourceDescriptor.code = std::string_view{source};
+  const wgpu::ShaderModuleDescriptor moduleDescriptor{
+      .nextInChain = &sourceDescriptor,
+      .label = "HDR Encode Module",
+  };
+  auto module = g_device.CreateShaderModule(&moduleDescriptor);
+  const std::array bindGroupLayoutEntries{
+      wgpu::BindGroupLayoutEntry{
+          .binding = 0,
+          .visibility = wgpu::ShaderStage::Fragment,
+          .buffer =
+              wgpu::BufferBindingLayout{
+                  .type = wgpu::BufferBindingType::Uniform,
+              },
+      },
+      wgpu::BindGroupLayoutEntry{
+          .binding = 1,
+          .visibility = wgpu::ShaderStage::Fragment,
+          .sampler =
+              wgpu::SamplerBindingLayout{
+                  .type = wgpu::SamplerBindingType::Filtering,
+              },
+      },
+      wgpu::BindGroupLayoutEntry{
+          .binding = 2,
+          .visibility = wgpu::ShaderStage::Fragment,
+          .texture =
+              wgpu::TextureBindingLayout{
+                  .sampleType = wgpu::TextureSampleType::Float,
+                  .viewDimension = wgpu::TextureViewDimension::e2D,
+              },
+      },
+      wgpu::BindGroupLayoutEntry{
+          .binding = 3,
+          .visibility = wgpu::ShaderStage::Fragment,
+          .texture =
+              wgpu::TextureBindingLayout{
+                  .sampleType = wgpu::TextureSampleType::Float,
+                  .viewDimension = wgpu::TextureViewDimension::e2D,
+              },
+      },
+  };
+  const wgpu::BindGroupLayoutDescriptor bindGroupLayoutDescriptor{
+      .entryCount = bindGroupLayoutEntries.size(),
+      .entries = bindGroupLayoutEntries.data(),
+  };
+  g_HdrEncodeBindGroupLayout = g_device.CreateBindGroupLayout(&bindGroupLayoutDescriptor);
+  const wgpu::PipelineLayoutDescriptor layoutDescriptor{
+      .bindGroupLayoutCount = 1,
+      .bindGroupLayouts = &g_HdrEncodeBindGroupLayout,
+  };
+  auto pipelineLayout = g_device.CreatePipelineLayout(&layoutDescriptor);
+  const std::array colorTargets{wgpu::ColorTargetState{
+      .format = g_graphicsConfig.surfaceConfiguration.format,
+      .writeMask = wgpu::ColorWriteMask::All,
+  }};
+  const wgpu::FragmentState fragmentState{
+      .module = module,
+      .entryPoint = "fs_hdr_encode",
+      .targetCount = colorTargets.size(),
+      .targets = colorTargets.data(),
+  };
+  const wgpu::RenderPipelineDescriptor pipelineDescriptor{
+      .label = "HDR Encode Pipeline",
+      .layout = pipelineLayout,
+      .vertex =
+          wgpu::VertexState{
+              .module = module,
+              .entryPoint = "vs_main",
+          },
+      .primitive =
+          wgpu::PrimitiveState{
+              .topology = wgpu::PrimitiveTopology::TriangleList,
+          },
+      .multisample =
+          wgpu::MultisampleState{
+              .count = 1,
+              .mask = UINT32_MAX,
+          },
+      .fragment = &fragmentState,
+  };
+  g_HdrEncodePipeline = g_device.CreateRenderPipeline(&pipelineDescriptor);
+
+  const wgpu::BufferDescriptor uniformBufferDescriptor{
+      .label = "HDR Encode Uniform Buffer",
+      .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Uniform,
+      .size = AURORA_ALIGN(sizeof(HdrEncodeUniformBlock), 16),
+  };
+  g_HdrEncodeUniformBuffer = g_device.CreateBuffer(&uniformBufferDescriptor);
+}
+
 wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source) {
   const std::array bindGroupEntries{
       wgpu::BindGroupEntry{
@@ -670,13 +876,28 @@ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source) {
   return g_device.CreateBindGroup(&bindGroupDescriptor);
 }
 
+TextureWithSampler hdr_scene_source(const AuroraHdrFrame& frame) {
+  const wgpu::Texture texture{static_cast<WGPUTexture>(frame.sceneTexture)};
+  return {
+      .texture = texture,
+      .view = texture.CreateView(),
+      .size = {texture.GetWidth(), texture.GetHeight(), 1},
+      .format = texture.GetFormat(),
+      .sampler = present_source().sampler,
+  };
+}
+
 const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport) {
-  const auto& source = present_source();
+  return resample_present_source(encoder, viewport, present_source());
+}
+
+const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport,
+                                                  const TextureWithSampler& source) {
   const uint32_t width = viewport_extent(viewport.width);
   const uint32_t height = viewport_extent(viewport.height);
   if (!g_resampledFrameBuffer.view || g_resampledFrameBuffer.size.width != width ||
-      g_resampledFrameBuffer.size.height != height || g_resampledFrameBuffer.format != source.format) {
-    g_resampledFrameBuffer = create_render_texture(width, height, false);
+      g_resampledFrameBuffer.size.height != height || g_resampledFrameBuffer.format != resample_format()) {
+    g_resampledFrameBuffer = create_render_texture(width, height, false, resample_format());
   }
 
   const ResampleUniformBlock uniform{
@@ -732,6 +953,71 @@ const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& en
   return g_resampledFrameBuffer;
 }
 
+void hdr_encode(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& target, const Viewport& viewport,
+                const AuroraHdrFrame& frame, const TextureWithSampler& sceneSource) {
+  const auto& source = resample_present_source(encoder, viewport, sceneSource.texture ? sceneSource : present_source());
+  // scRGB 1.0 is 80 nits for DXGI (G10_NONE_P709) and Vulkan EXTENDED_SRGB_LINEAR, so those
+  // present the encode as is; Apple EDR 1.0 is the OS SDR white, hence the paper-white rescale.
+  const float edrHeadroom =
+      g_hdrMode == AURORA_HDR_SCRGB && g_backendType == wgpu::BackendType::Metal ? edr_headroom() : 1.f;
+  const HdrEncodeUniformBlock uniform{
+      .mode = g_hdrMode == AURORA_HDR_HDR10 ? 1u : 2u,
+      .sceneLinear = frame.sceneLinear ? 1u : 0u,
+      .paperWhite = frame.paperWhiteNits,
+      .peak = frame.peakNits,
+      .edrScale = edrHeadroom > 1.f ? 80.f / std::max(frame.paperWhiteNits, 1.f) : 1.f,
+      .edrPeak = edrHeadroom > 1.f ? std::max(edrHeadroom, 1.f) : std::numeric_limits<float>::max(),
+  };
+  AURORA_ASSERT(gfx::render_worker::is_worker_thread(), "HDR encode queue write must run on the render worker");
+  g_queue.WriteBuffer(g_HdrEncodeUniformBuffer, 0, &uniform, sizeof(uniform));
+
+  const std::array bindGroupEntries{
+      wgpu::BindGroupEntry{
+          .binding = 0,
+          .buffer = g_HdrEncodeUniformBuffer,
+          .size = AURORA_ALIGN(sizeof(HdrEncodeUniformBlock), 16),
+      },
+      wgpu::BindGroupEntry{
+          .binding = 1,
+          .sampler = source.sampler,
+      },
+      wgpu::BindGroupEntry{
+          .binding = 2,
+          .textureView = source.view,
+      },
+      wgpu::BindGroupEntry{
+          .binding = 3,
+          .textureView = g_uiOverlay.view,
+      },
+  };
+  const wgpu::BindGroupDescriptor bindGroupDescriptor{
+      .layout = g_HdrEncodeBindGroupLayout,
+      .entryCount = bindGroupEntries.size(),
+      .entries = bindGroupEntries.data(),
+  };
+  const auto bindGroup = g_device.CreateBindGroup(&bindGroupDescriptor);
+
+  const std::array attachments{
+      wgpu::RenderPassColorAttachment{
+          .view = target,
+          .loadOp = wgpu::LoadOp::Clear,
+          .storeOp = wgpu::StoreOp::Store,
+      },
+  };
+  const wgpu::RenderPassDescriptor renderPassDescriptor{
+      .label = "HDR encode render pass",
+      .colorAttachmentCount = attachments.size(),
+      .colorAttachments = attachments.data(),
+      .timestampWrites = gpu_prof::pass_writes("HDR encode"),
+  };
+  const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+  pass.SetPipeline(g_HdrEncodePipeline);
+  pass.SetBindGroup(0, bindGroup, 0, nullptr);
+  pass.SetViewport(viewport.left, viewport.top, viewport.width, viewport.height, 0.f, 1.f);
+  pass.Draw(3);
+  pass.End();
+}
+
 static wgpu::BackendType to_wgpu_backend(AuroraBackend backend) {
   switch (backend) {
   case BACKEND_WEBGPU:
@@ -763,7 +1049,7 @@ static bool create_surface() {
   }
   window::SurfaceLock surfaceLock;
   release_surface_locked();
-  g_surface = create_window_surface(g_instance, window, "Surface");
+  g_surface = create_window_surface(g_instance, window, "Surface", g_surfaceHdrMode);
   if (!g_surface) {
     Log.error("Failed to create surface");
     return false;
@@ -772,6 +1058,8 @@ static bool create_surface() {
 }
 
 bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
+  g_hdrMode = AURORA_HDR_OFF;
+  hdr::g_frameState = hdr::FrameState{g_config.hdrPaperWhiteNits, g_config.hdrPeakNits};
   if (!g_instance) {
     Log.info("Creating WebGPU instance");
     const std::array requiredInstanceFeatures{
@@ -806,6 +1094,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
   }
   const wgpu::BackendType backend = to_wgpu_backend(auroraBackend);
   Log.info("Attempting to initialize {}", magic_enum::enum_name(backend));
+  g_surfaceHdrMode = g_config.hdrMode;
 #if 0
   // D3D12's debug layer is very slow
   g_dawnInstance->EnableBackendValidation(backend != WGPUBackendType::D3D12);
@@ -1046,7 +1335,21 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
   }
   g_queue = g_device.GetQueue();
 
-  const wgpu::Status status = g_surface.GetCapabilities(g_adapter, &g_surfaceCapabilities);
+  wgpu::Status status = g_surface.GetCapabilities(g_adapter, &g_surfaceCapabilities);
+  // A display with no HDR at all reports no formats for a color-managed surface (e.g. Windows
+  // HDR is off). Fall back to SDR by recreating the surface without color management.
+  if (status == wgpu::Status::Success && g_surfaceCapabilities.formatCount == 0 && g_surfaceHdrMode != AURORA_HDR_OFF) {
+    Log.warn("HDR mode {} is not offered by the display; using SDR", hdr::mode_name(g_surfaceHdrMode));
+    g_surfaceHdrMode = AURORA_HDR_OFF;
+    {
+      window::SurfaceLock surfaceLock;
+      release_surface_locked();
+    }
+    if (!create_surface()) {
+      return false;
+    }
+    status = g_surface.GetCapabilities(g_adapter, &g_surfaceCapabilities);
+  }
   if (status != wgpu::Status::Success) {
     Log.error("Failed to get surface capabilities: {}", magic_enum::enum_name(status));
     return false;
@@ -1059,11 +1362,40 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
     Log.error("Surface has no present modes");
     return false;
   }
-  auto surfaceFormat = best_surface_format();
+  const std::span offeredFormats{g_surfaceCapabilities.formats, g_surfaceCapabilities.formatCount};
+  if (g_surfaceHdrMode != AURORA_HDR_OFF && !hdr::hdr_backend_supported(g_backendType)) {
+    Log.warn("HDR mode {} is not supported on the {} backend; using SDR", hdr::mode_name(g_surfaceHdrMode),
+             magic_enum::enum_name(g_backendType));
+  } else if (g_surfaceHdrMode != AURORA_HDR_OFF) {
+    g_hdrMode = hdr::resolve_mode(g_surfaceHdrMode, offeredFormats);
+    if (g_hdrMode != g_surfaceHdrMode) {
+      std::string formatList;
+      for (const auto format : offeredFormats) {
+        formatList += "\n  ";
+        formatList += magic_enum::enum_name(format);
+      }
+      Log.warn("HDR mode {} unavailable, falling back to SDR. Offered formats:{}", hdr::mode_name(g_surfaceHdrMode),
+               formatList);
+    }
+  }
+  wgpu::TextureFormat surfaceFormat;
+  wgpu::TextureFormat colorFormat;
+  if (g_hdrMode != AURORA_HDR_OFF) {
+    surfaceFormat = hdr::required_format(g_hdrMode);
+    // 8-bit like the GameCube EFB: blends must saturate at 1.0 (float let additive effects exceed it,
+    // and (1 - dst) blends then subtracted). HDR comes from the mod's float scene texture override.
+    colorFormat = wgpu::TextureFormat::RGBA8Unorm;
+  } else {
+    surfaceFormat = best_surface_format();
+    colorFormat = surfaceFormat;
+  }
   g_vsyncEnabled.store(g_config.vsync, std::memory_order_release);
   auto presentMode = select_present_mode(g_surfaceCapabilities);
   Log.info("Using surface format {}, present mode {}", magic_enum::enum_name(surfaceFormat),
            magic_enum::enum_name(presentMode));
+  if (g_hdrMode != AURORA_HDR_OFF) {
+    Log.info("HDR output: {}", hdr::mode_name(g_hdrMode));
+  }
   const auto size = window::get_window_size();
   g_graphicsConfig = GraphicsConfig{
       .surfaceConfiguration =
@@ -1074,12 +1406,16 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
               .height = size.native_fb_height,
               .presentMode = presentMode,
           },
+      .colorFormat = colorFormat,
       .depthFormat = wgpu::TextureFormat::Depth32Float,
       .msaaSamples = g_config.msaa,
       .textureAnisotropy = g_config.maxTextureAnisotropy,
   };
   create_copy_pipeline();
   create_resample_pipeline();
+  if (g_hdrMode != AURORA_HDR_OFF) {
+    create_hdr_encode_pipeline();
+  }
   gpu_prof::initialize();
   resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height, true);
   g_initialized = true;
@@ -1088,6 +1424,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
 
 void shutdown() {
   g_initialized = false;
+  g_hdrMode = AURORA_HDR_OFF;
   gfx::gpu_synchronize();
   gpu_prof::shutdown();
   g_CopyBindGroupLayout = {};
@@ -1098,11 +1435,18 @@ void shutdown() {
   g_ResamplePipeline = {};
   g_ResampleUniformBuffer = {};
   g_resampledFrameBuffer = {};
+  g_HdrEncodeBindGroupLayout = {};
+  g_HdrEncodePipeline = {};
+  g_HdrEncodeUniformBuffer = {};
+  g_uiOverlay = {};
   g_frameBuffer = {};
   g_frameBufferResolved = {};
   g_depthBuffer = {};
   g_normalBuffer = {};
   g_graphicsConfig.normalBuffer = false;
+  g_hdrGainBuffer = {};
+  g_hdrGlowBuffer = {};
+  g_graphicsConfig.hdrSideBuffers = false;
   g_queue = {};
   g_surface = {};
   g_device = {};
@@ -1147,6 +1491,17 @@ static void resize_swapchain_internal(uint32_t width, uint32_t height, uint32_t 
   g_depthBuffer = create_depth_texture(width, height);
   if (g_graphicsConfig.normalBuffer) {
     g_normalBuffer = create_normal_texture(width, height);
+  }
+  // Single-sample only, like the normal buffer; MSAA would need multisampled side buffers.
+  g_graphicsConfig.hdrSideBuffers = g_hdrMode != AURORA_HDR_OFF && g_graphicsConfig.msaaSamples == 1;
+  if (g_graphicsConfig.hdrSideBuffers) {
+    g_hdrGainBuffer = create_render_texture(width, height, false, HdrSideBufferFormat);
+    g_hdrGlowBuffer = create_render_texture(width, height, false, HdrSideBufferFormat);
+  }
+  if (g_hdrMode != AURORA_HDR_OFF) {
+    if (!g_uiOverlay.view || g_uiOverlay.size.width != nativeWidth || g_uiOverlay.size.height != nativeHeight) {
+      g_uiOverlay = create_render_texture(nativeWidth, nativeHeight, false, ui_format());
+    }
   }
   g_CopyBindGroup = create_copy_bind_group(present_source());
 }

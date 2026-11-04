@@ -1,5 +1,7 @@
 #include "BackendBinding.hpp"
 
+#include "../webgpu/hdr.hpp"
+
 #include <aurora/webgpu.hpp>
 
 #include <memory>
@@ -49,7 +51,8 @@ std::shared_ptr<wgpu::ChainedStruct> SetupWindowAndGetSurfaceDescriptor(SDL_Wind
 
 } // namespace utils
 
-wgpu::Surface create_window_surface(const wgpu::Instance& instance, SDL_Window* window, const char* label) {
+wgpu::Surface create_window_surface(const wgpu::Instance& instance, SDL_Window* window, const char* label,
+                                    AuroraHdrMode hdrMode) {
   if (!instance || window == nullptr) {
     return nullptr;
   }
@@ -57,8 +60,14 @@ wgpu::Surface create_window_surface(const wgpu::Instance& instance, SDL_Window* 
   if (!chainedDescriptor) {
     return nullptr;
   }
+  auto colorManagement = hdr::color_management(hdrMode);
+  wgpu::ChainedStruct* chain = chainedDescriptor.get();
+  if (colorManagement) {
+    colorManagement->nextInChain = chain;
+    chain = &*colorManagement;
+  }
   const wgpu::SurfaceDescriptor descriptor{
-      .nextInChain = chainedDescriptor.get(),
+      .nextInChain = chain,
       .label = label,
   };
   return instance.CreateSurface(&descriptor);

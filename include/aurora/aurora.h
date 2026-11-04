@@ -30,6 +30,12 @@ typedef enum {
 } AuroraBackend;
 
 typedef enum {
+  AURORA_HDR_OFF = 0,
+  AURORA_HDR_HDR10 = 1, /* Vulkan and D3D12; Metal presents only scRGB (EDR). */
+  AURORA_HDR_SCRGB = 2,
+} AuroraHdrMode;
+
+typedef enum {
   LOG_DEBUG,
   LOG_INFO,
   LOG_WARNING,
@@ -116,7 +122,27 @@ typedef struct {
    * This can be set to 0 to disable allocating this region.
    */
   uint32_t mem2Size;
+
+  /* HDR output request. Falls back to AURORA_HDR_OFF if the surface cannot present the format. */
+  AuroraHdrMode hdrMode;
+  /* 0 selects 200 nits. */
+  float hdrPaperWhiteNits;
+  /* 0 selects 1000 nits. */
+  float hdrPeakNits;
 } AuroraConfig;
+
+typedef struct {
+  /* The presented frame already holds linear scRGB (1.0 = 80 nits) rather than SDR-encoded color. */
+  bool sceneLinear;
+  /* Let lit surfaces exceed 1.0 via the post-TEV lighting gain; applies from the next frame. */
+  bool unclipLighting;
+  /* Nits of SDR white (1.0) and the display peak used by the encode. */
+  float paperWhiteNits;
+  float peakNits;
+  /* Borrowed WGPUTexture presented instead of the game frame this frame (NULL = game frame).
+   * Must have TextureBinding usage; aurora references it at aurora_end_frame. */
+  void* sceneTexture;
+} AuroraHdrFrame;
 
 typedef struct {
   AuroraBackend backend;
@@ -140,6 +166,10 @@ void aurora_set_resampler(AuroraSampler sampler);
 void aurora_set_timescale(float scale);
 
 AuroraBackend aurora_get_backend();
+/** Active HDR mode after surface fallback. */
+AuroraHdrMode aurora_get_hdr_mode();
+/** Per-frame HDR state, between aurora_begin_frame and aurora_end_frame. Ignored when HDR is off. */
+void aurora_set_hdr_frame(const AuroraHdrFrame* frame);
 const AuroraBackend* aurora_get_available_backends(size_t* count);
 float aurora_get_timescale();
 

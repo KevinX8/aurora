@@ -16,6 +16,9 @@ enum class ColorAttachmentSemantic : uint8_t {
   SceneColor,
   Normal,
   Auxiliary,
+  // HDR side buffers (HDR output only): per-pixel lighting gain and unsaturated additive glow.
+  HdrGain,
+  HdrGlow,
 };
 
 struct ColorAttachmentLayout {
@@ -157,6 +160,9 @@ struct ResolvedTargets {
   // RGB10A2Unorm snapshot; null when not requested or unavailable
   wgpu::Texture normalTexture;
   wgpu::TextureView normal;
+  // Live HDR side buffers (not snapshots): sample only from encoder tasks queued after this resolve.
+  wgpu::TextureView hdrGain;
+  wgpu::TextureView hdrGlow;
   wgpu::TextureFormat colorFormat = wgpu::TextureFormat::Undefined;
   uint32_t width = 0;
   uint32_t height = 0;

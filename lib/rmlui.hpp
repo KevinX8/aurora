@@ -16,7 +16,7 @@ struct RecordedFrame {
 
 void initialize(const AuroraWindowSize& size) noexcept;
 void handle_event(SDL_Event& event) noexcept;
-RecordedFrame record_frame(const webgpu::Viewport& presentViewport) noexcept;
+RecordedFrame record_frame(const webgpu::Viewport& presentViewport, const webgpu::TextureWithSampler& scene) noexcept;
 void shutdown() noexcept;
 
 } // namespace aurora::rmlui

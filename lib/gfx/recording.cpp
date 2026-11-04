@@ -95,6 +95,13 @@ void set_efb_targets(RenderPass& pass) {
     if (color.semantic == ColorAttachmentSemantic::Normal) {
       color.size = webgpu::g_normalBuffer.size;
       color.view = webgpu::g_normalBuffer.view;
+    } else if (color.semantic == ColorAttachmentSemantic::HdrGain) {
+      color.size = webgpu::g_hdrGainBuffer.size;
+      color.view = webgpu::g_hdrGainBuffer.view;
+      color.clearValue = {1.f, 1.f, 1.f, 1.f}; // no lighting gain
+    } else if (color.semantic == ColorAttachmentSemantic::HdrGlow) {
+      color.size = webgpu::g_hdrGlowBuffer.size;
+      color.view = webgpu::g_hdrGlowBuffer.view;
     } else {
       AURORA_ASSERT(false, "Scene render-target attachment {} has no backing texture", i);
     }
@@ -165,8 +172,8 @@ PassSnapshotEntry& acquire_pass_snapshot(uint32_t width, uint32_t height, bool w
   auto& entry = pool.entries[pool.used++];
   const wgpu::Extent3D size{width, height, 1};
   if (wantColor && (!entry.color.texture || entry.color.size.width != width || entry.color.size.height != height ||
-                    entry.color.format != webgpu::g_graphicsConfig.surfaceConfiguration.format)) {
-    const auto format = webgpu::g_graphicsConfig.surfaceConfiguration.format;
+                    entry.color.format != webgpu::g_graphicsConfig.colorFormat)) {
+    const auto format = webgpu::g_graphicsConfig.colorFormat;
     const wgpu::TextureDescriptor desc{
         .label = "Pass Snapshot Color",
         .usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc,
@@ -374,7 +381,7 @@ OffscreenCacheEntry get_offscreen_textures(uint32_t width, uint32_t height) {
   if (const auto it = g_offscreenCache.find(key); it != g_offscreenCache.end()) {
     return it->second;
   }
-  const auto colorFormat = webgpu::g_graphicsConfig.surfaceConfiguration.format;
+  const auto colorFormat = webgpu::g_graphicsConfig.colorFormat;
   const wgpu::Extent3D size{width, height, 1};
   const wgpu::TextureDescriptor colorDesc{
       .label = "Offscreen Color",
@@ -873,6 +880,10 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
     color.loadOp = wgpu::LoadOp::Undefined;
     if (color.semantic == ColorAttachmentSemantic::Normal && clearDepth && fullTarget) {
       color.clear = true;
+    } else if ((color.semantic == ColorAttachmentSemantic::HdrGain ||
+                color.semantic == ColorAttachmentSemantic::HdrGlow) &&
+               fullColorClear) {
+      color.clear = true; // follows the scene color it annotates
     } else {
       color.clear = false;
     }
@@ -1064,6 +1075,10 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
   }
   out.width = width;
   out.height = height;
+  if (webgpu::g_graphicsConfig.hdrSideBuffers && !g_recorder.inOffscreen) {
+    out.hdrGain = webgpu::g_hdrGainBuffer.view;
+    out.hdrGlow = webgpu::g_hdrGlowBuffer.view;
+  }
 
   if (g_recorder.inOffscreen) {
     // Seal the offscreen pass and resume the EFB.

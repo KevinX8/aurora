@@ -86,9 +86,14 @@ endif ()
 
 # ── Auto: resolve provider based on platform availability ──
 set(_aurora_dawn_provider "${AURORA_DAWN_PROVIDER}")
+file(GLOB _aurora_dawn_hdr_patches CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/patches/dawn-*.patch")
+list(SORT _aurora_dawn_hdr_patches)
 if (_aurora_dawn_provider STREQUAL "auto")
-  # Prebuilt Dawn packages available for: windows-{amd64,arm64}, linux-{x86_64,aarch64}, darwin-{arm64,x86_64}, ios-arm64, android-aarch64
-  if (_has_dawn_package)
+  # HDR needs the Dawn patches in cmake/patches, which only the vendored source carries.
+  if (_aurora_dawn_hdr_patches)
+    set(_aurora_dawn_provider "vendor")
+  elseif (_has_dawn_package)
+    # Prebuilt Dawn packages available for: windows-{amd64,arm64}, linux-{x86_64,aarch64}, darwin-{arm64,x86_64}, ios-arm64, android-aarch64
     set(_aurora_dawn_provider "package")
   else ()
     set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
@@ -138,10 +143,24 @@ if (_aurora_dawn_provider STREQUAL "vendor")
       set(ABSL_MSVC_STATIC_RUNTIME ON CACHE INTERNAL "Link static runtime libraries")
     endif ()
 
+    # HDR patches (SurfaceColorManagement on Vulkan/D3D12/Metal), against AURORA_DAWN_REF.
+    # FetchContent applies them only when it populates the source: wipe _deps/dawn-src after editing one.
+    find_package(Git QUIET)
+    set(_aurora_dawn_patch_command "")
+    if (_aurora_dawn_hdr_patches)
+      if (NOT GIT_FOUND)
+        message(FATAL_ERROR "aurora: git is required to apply Dawn HDR patches for provider=vendor")
+      endif ()
+      # GIT_DIR= stops git apply from anchoring to an enclosing repo and skipping every hunk.
+      set(_aurora_dawn_patch_command "${CMAKE_COMMAND}" -E env "GIT_DIR="
+        "${GIT_EXECUTABLE}" apply --ignore-whitespace ${_aurora_dawn_hdr_patches})
+    endif ()
+
     include(FetchContent)
     FetchContent_Declare(dawn
       URL "https://github.com/encounter/dawn/archive/${AURORA_DAWN_REF}.tar.gz"
       DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+      PATCH_COMMAND ${_aurora_dawn_patch_command}
       EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(dawn)

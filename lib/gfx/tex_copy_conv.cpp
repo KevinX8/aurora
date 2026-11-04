@@ -516,9 +516,9 @@ void initialize() {
   };
   g_depthBindGroupLayout = g_device.CreateBindGroupLayout(&depthBindGroupLayoutDescriptor);
 
-  g_blitPipeline = create_pipeline(
-      {GX_TF_RGBA8, FragPassthrough, webgpu::g_graphicsConfig.surfaceConfiguration.format, "TexCopyConv Blit"},
-      ShaderPreamble, g_bindGroupLayout);
+  g_blitPipeline =
+      create_pipeline({GX_TF_RGBA8, FragPassthrough, webgpu::g_graphicsConfig.colorFormat, "TexCopyConv Blit"},
+                      ShaderPreamble, g_bindGroupLayout);
   for (const auto& conv : ConvPipelines) {
     g_pipelines[conv.fmt] = create_pipeline(conv, ShaderPreamble, g_bindGroupLayout);
     if (conv.outputFormat != to_wgpu(conv.fmt)) {

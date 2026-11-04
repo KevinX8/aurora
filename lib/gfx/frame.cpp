@@ -275,7 +275,7 @@ wgpu::Device device() noexcept { return g_device; }
 
 wgpu::Queue queue() noexcept { return g_queue; }
 
-wgpu::TextureFormat color_format() noexcept { return webgpu::g_graphicsConfig.surfaceConfiguration.format; }
+wgpu::TextureFormat color_format() noexcept { return webgpu::g_graphicsConfig.colorFormat; }
 
 wgpu::TextureFormat depth_format() noexcept { return webgpu::g_graphicsConfig.depthFormat; }
 
@@ -300,6 +300,17 @@ RenderTargetLayout scene_render_target_layout() noexcept {
         .width = webgpu::g_normalBuffer.size.width,
         .height = webgpu::g_normalBuffer.size.height,
     };
+  }
+  if (webgpu::g_graphicsConfig.hdrSideBuffers) {
+    for (const auto& [semantic, buffer] : {std::pair{ColorAttachmentSemantic::HdrGain, &webgpu::g_hdrGainBuffer},
+                                           std::pair{ColorAttachmentSemantic::HdrGlow, &webgpu::g_hdrGlowBuffer}}) {
+      layout.colorAttachments[layout.colorAttachmentCount++] = {
+          .semantic = semantic,
+          .format = buffer->format,
+          .width = buffer->size.width,
+          .height = buffer->size.height,
+      };
+    }
   }
   finalize_render_target_layout(layout);
   return layout;

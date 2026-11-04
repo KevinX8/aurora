@@ -82,7 +82,7 @@ void ensure_render_target(Rml::Vector2i dimensions) noexcept {
   if (s_renderTarget.view && s_renderTarget.size.width == width && s_renderTarget.size.height == height) {
     return;
   }
-  s_renderTarget = webgpu::create_render_texture(width, height, false);
+  s_renderTarget = webgpu::create_render_texture(width, height, false, webgpu::ui_format());
   s_renderTargetCopyBindGroup = webgpu::create_copy_bind_group(s_renderTarget);
 }
 
@@ -362,7 +362,7 @@ void initialize(const AuroraWindowSize& size) noexcept {
   Rml::SetFileInterface(g_fileInterface);
 
   renderInterface->SetWindowSize(dim);
-  renderInterface->SetRenderTargetFormat(webgpu::g_graphicsConfig.surfaceConfiguration.format);
+  renderInterface->SetRenderTargetFormat(webgpu::ui_format());
   renderInterface->CreateDeviceObjects();
 
   Rml::Initialise();
@@ -449,7 +449,7 @@ void handle_event(SDL_Event& event) noexcept {
   RmlSDL::InputEventHandler(g_context, window::get_sdl_window(), event);
 }
 
-RecordedFrame record_frame(const webgpu::Viewport& presentViewport) noexcept {
+RecordedFrame record_frame(const webgpu::Viewport& presentViewport, const webgpu::TextureWithSampler& scene) noexcept {
   if (g_context == nullptr) {
     return {};
   }
@@ -467,7 +467,7 @@ RecordedFrame record_frame(const webgpu::Viewport& presentViewport) noexcept {
 
   auto* renderInterface = get_render_interface();
   renderInterface->SetWindowSize(g_context->GetDimensions());
-  renderInterface->BeginFrame(s_renderTarget, webgpu::present_source(),
+  renderInterface->BeginFrame(s_renderTarget, scene,
                               needsBackdrop ? BaseLayerContent::Scene : BaseLayerContent::Transparent);
 
   Backend::BeginFrame();
