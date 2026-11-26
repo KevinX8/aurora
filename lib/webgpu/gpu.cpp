@@ -31,6 +31,13 @@
 #ifdef WEBGPU_DAWN
 #include "../dawn/TracyPlatform.hpp"
 #include <dawn/native/DawnNative.h>
+#ifdef DAWN_ENABLE_BACKEND_VULKAN
+// From dawn/native/VulkanBackend.h, declared here so this file doesn't need the Vulkan headers
+namespace dawn::native::vulkan {
+void SetHdrMetadata(float maxContentLightLevel, float maxFrameAverageLightLevel, float maxMasteringLuminance,
+                    float minMasteringLuminance);
+}
+#endif
 #endif
 
 namespace aurora::gx {
@@ -970,6 +977,15 @@ void hdr_encode(const wgpu::CommandEncoder& encoder, const wgpu::TextureView& ta
   };
   AURORA_ASSERT(gfx::render_worker::is_worker_thread(), "HDR encode queue write must run on the render worker");
   g_queue.WriteBuffer(g_HdrEncodeUniformBuffer, 0, &uniform, sizeof(uniform));
+
+#if defined(WEBGPU_DAWN) && defined(DAWN_ENABLE_BACKEND_VULKAN)
+  // The encode maps paper white to frame.paperWhiteNits and tone maps everything below frame.peakNits,
+  // so the peak bounds every pixel and paper white bounds the full-frame average
+  if (g_backendType == wgpu::BackendType::Vulkan) {
+    const float peak = std::max(frame.peakNits, 1.f);
+    dawn::native::vulkan::SetHdrMetadata(peak, std::min(frame.paperWhiteNits, peak), peak, 0.f);
+  }
+#endif
 
   const std::array bindGroupEntries{
       wgpu::BindGroupEntry{

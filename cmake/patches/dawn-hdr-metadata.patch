@@ -1,0 +1,168 @@
+diff --git a/include/dawn/native/VulkanBackend.h b/include/dawn/native/VulkanBackend.h
+index 355c4b8..afbfa52 100644
+--- a/include/dawn/native/VulkanBackend.h
++++ b/include/dawn/native/VulkanBackend.h
+@@ -41,6 +41,14 @@ DAWN_NATIVE_EXPORT VkInstance GetInstance(WGPUDevice device);
+ 
+ DAWN_NATIVE_EXPORT PFN_vkVoidFunction GetInstanceProcAddr(WGPUDevice device, const char* pName);
+ 
++// Static HDR metadata (VK_EXT_hdr_metadata) sent with every HDR swapchain's next present, in cd/m^2.
++// Mastering primaries are BT.2020 with a D65 white point, since HDR grades may push colors past BT.709.
++// Compositors use it to tone map: without it KWin clamps scRGB at 80 cd/m^2 and treats HDR10 as 10000 cd/m^2 content
++DAWN_NATIVE_EXPORT void SetHdrMetadata(float maxContentLightLevel,
++                                       float maxFrameAverageLightLevel,
++                                       float maxMasteringLuminance,
++                                       float minMasteringLuminance);
++
+ enum class NeedsDedicatedAllocation {
+     Yes,
+     No,
+diff --git a/src/dawn/native/vulkan/SwapChainVk.cpp b/src/dawn/native/vulkan/SwapChainVk.cpp
+index bfd037a..ae50270 100644
+--- a/src/dawn/native/vulkan/SwapChainVk.cpp
++++ b/src/dawn/native/vulkan/SwapChainVk.cpp
+@@ -28,9 +28,12 @@
+ #include "src/dawn/native/vulkan/SwapChainVk.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <limits>
++#include <mutex>
+ #include <utility>
+ 
++#include "dawn/native/VulkanBackend.h"
+ #include "src/dawn/common/Compiler.h"
+ #include "src/dawn/common/Range.h"
+ #include "src/dawn/native/ChainUtils.h"
+@@ -126,7 +129,41 @@ SwapChain::~SwapChain() = default;
+ 
+ // Note that when we need to re-create the swapchain because it is out of date,
+ // previousSwapChain can be set to `this`.
++namespace {
++
++std::mutex gHdrMetadataMutex;
++VkHdrMetadataEXT gHdrMetadata{};
++std::atomic<uint64_t> gHdrMetadataGeneration{0};
++
++}  // namespace
++
++void SetHdrMetadata(float maxContentLightLevel,
++                    float maxFrameAverageLightLevel,
++                    float maxMasteringLuminance,
++                    float minMasteringLuminance) {
++    std::lock_guard<std::mutex> lock(gHdrMetadataMutex);
++    VkHdrMetadataEXT metadata{};
++    metadata.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT;
++    metadata.displayPrimaryRed = {0.708f, 0.292f};
++    metadata.displayPrimaryGreen = {0.170f, 0.797f};
++    metadata.displayPrimaryBlue = {0.131f, 0.046f};
++    metadata.whitePoint = {0.3127f, 0.3290f};
++    metadata.maxLuminance = maxMasteringLuminance;
++    metadata.minLuminance = minMasteringLuminance;
++    metadata.maxContentLightLevel = maxContentLightLevel;
++    metadata.maxFrameAverageLightLevel = maxFrameAverageLightLevel;
++    if (metadata.maxLuminance == gHdrMetadata.maxLuminance &&
++        metadata.minLuminance == gHdrMetadata.minLuminance &&
++        metadata.maxContentLightLevel == gHdrMetadata.maxContentLightLevel &&
++        metadata.maxFrameAverageLightLevel == gHdrMetadata.maxFrameAverageLightLevel) {
++        return;
++    }
++    gHdrMetadata = metadata;
++    gHdrMetadataGeneration.fetch_add(1);
++}
++
+ MaybeError SwapChain::Initialize(SwapChainBase* previousSwapChain) {
++    mHdrMetadataGeneration = 0;
+     Device* device = ToBackend(GetDevice());
+     PhysicalDevice* physicalDevice = ToBackend(GetDevice()->GetPhysicalDevice());
+ 
+@@ -450,6 +487,15 @@ MaybeError SwapChain::PresentImpl() {
+     mTexture->APIDestroy();
+     mTexture = nullptr;
+ 
++    const uint64_t hdrGeneration = gHdrMetadataGeneration.load();
++    if (hdrGeneration != mHdrMetadataGeneration &&
++        mConfig.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
++        device->GetDeviceInfo().HasExt(DeviceExt::HdrMetadata)) {
++        std::lock_guard<std::mutex> lock(gHdrMetadataMutex);
++        device->fn.SetHdrMetadataEXT(device->GetVkDevice(), 1, &*mSwapChain, &gHdrMetadata);
++        mHdrMetadataGeneration = hdrGeneration;
++    }
++
+     VkResult result = VkResult::WrapUnsafe(
+         device->fn.QueuePresentKHR(ToBackend(device->GetQueue())->GetVkQueue(), &presentInfo));
+ 
+diff --git a/src/dawn/native/vulkan/SwapChainVk.h b/src/dawn/native/vulkan/SwapChainVk.h
+index 3dc1106..7754a67 100644
+--- a/src/dawn/native/vulkan/SwapChainVk.h
++++ b/src/dawn/native/vulkan/SwapChainVk.h
+@@ -87,6 +87,8 @@ class SwapChain : public SwapChainBase {
+ 
+     VkSurfaceKHR mVkSurface = VK_NULL_HANDLE;
+     VkSwapchainKHR mSwapChain = VK_NULL_HANDLE;
++    // Generation of the SetHdrMetadata values last sent for mSwapChain; 0 means none sent yet
++    uint64_t mHdrMetadataGeneration = 0;
+ 
+     struct PerImage {
+         VkImage image;
+diff --git a/src/dawn/native/vulkan/VulkanExtensions.cpp b/src/dawn/native/vulkan/VulkanExtensions.cpp
+index 853e9d4..d28911b 100644
+--- a/src/dawn/native/vulkan/VulkanExtensions.cpp
++++ b/src/dawn/native/vulkan/VulkanExtensions.cpp
+@@ -156,6 +156,7 @@ static constexpr std::array<DeviceExtInfo, kDeviceExtCount> sDeviceExtInfos{{
+     {DeviceExt::QueueFamilyForeign, "VK_EXT_queue_family_foreign"},
+     {DeviceExt::Robustness2, "VK_EXT_robustness2"},
+     {DeviceExt::DisplayTiming, "VK_GOOGLE_display_timing"},
++    {DeviceExt::HdrMetadata, "VK_EXT_hdr_metadata"},
+     {DeviceExt::CooperativeMatrix, "VK_KHR_cooperative_matrix"},
+     {DeviceExt::MultisampledRenderToSingleSampled, "VK_EXT_multisampled_render_to_single_sampled"},
+     {DeviceExt::PhysicalDeviceDrm, "VK_EXT_physical_device_drm"},
+@@ -270,6 +271,7 @@ DeviceExtSet EnsureDependencies(const DeviceExtSet& advertisedExts,
+                 break;
+ 
+             case DeviceExt::DisplayTiming:
++            case DeviceExt::HdrMetadata:
+                 hasDependencies = HasDep(DeviceExt::Swapchain);
+                 break;
+ 
+diff --git a/src/dawn/native/vulkan/VulkanExtensions.h b/src/dawn/native/vulkan/VulkanExtensions.h
+index 108f85c..f95bce3 100644
+--- a/src/dawn/native/vulkan/VulkanExtensions.h
++++ b/src/dawn/native/vulkan/VulkanExtensions.h
+@@ -113,6 +113,7 @@ enum class DeviceExt : uint32_t {
+     QueueFamilyForeign,
+     Robustness2,
+     DisplayTiming,
++    HdrMetadata,
+     CooperativeMatrix,
+     MultisampledRenderToSingleSampled,
+     PhysicalDeviceDrm,
+diff --git a/src/dawn/native/vulkan/VulkanFunctions.cpp b/src/dawn/native/vulkan/VulkanFunctions.cpp
+index 1dba519..8741521 100644
+--- a/src/dawn/native/vulkan/VulkanFunctions.cpp
++++ b/src/dawn/native/vulkan/VulkanFunctions.cpp
+@@ -496,6 +496,10 @@ MaybeError VulkanFunctions::LoadDeviceProcs(VkInstance instance,
+         GET_DEVICE_PROC(QueuePresentKHR);
+     }
+ 
++    if (deviceInfo.HasExt(DeviceExt::HdrMetadata)) {
++        GET_DEVICE_PROC(SetHdrMetadataEXT);
++    }
++
+ #if defined(VK_USE_PLATFORM_FUCHSIA)
+     if (deviceInfo.HasExt(DeviceExt::ExternalMemoryZirconHandle)) {
+         GET_DEVICE_PROC(GetMemoryZirconHandleFUCHSIA);
+diff --git a/src/dawn/native/vulkan/VulkanFunctions.h b/src/dawn/native/vulkan/VulkanFunctions.h
+index e61a0ba..7a59f54 100644
+--- a/src/dawn/native/vulkan/VulkanFunctions.h
++++ b/src/dawn/native/vulkan/VulkanFunctions.h
+@@ -399,6 +399,9 @@ struct VulkanFunctions {
+     VkFn<PFN_vkAcquireNextImageKHR> AcquireNextImageKHR = nullptr;
+     VkFn<PFN_vkQueuePresentKHR> QueuePresentKHR = nullptr;
+ 
++    // VK_EXT_hdr_metadata
++    VkFn<PFN_vkSetHdrMetadataEXT> SetHdrMetadataEXT = nullptr;
++
+ #if defined(VK_USE_PLATFORM_FUCHSIA)
+     // VK_FUCHSIA_external_memory
+     VkFn<PFN_vkGetMemoryZirconHandleFUCHSIA> GetMemoryZirconHandleFUCHSIA = nullptr;
